@@ -9,7 +9,7 @@ import (
     "github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
     "github.com/aws/aws-sdk-go-v2/service/dynamodb"
     "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-    "github.com/yourusername/digital-library-backend/models"
+    "github.com/nkowanitemwani/amp-digital-library-backend/models"
 )
 
 type DynamoDBService struct {
@@ -24,7 +24,7 @@ func NewDynamoDBService(client *dynamodb.Client, tableName string) *DynamoDBServ
     }
 }
 
-func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models.FileMetadata) error {
+func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models.FileMetaData) error {
     item, err := attributevalue.MarshalMap(metadata)
     if err != nil {
         return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -38,7 +38,7 @@ func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models
     return err
 }
 
-func (d *DynamoDBService) GetFileMetadata(ctx context.Context, fileID string) (*models.FileMetadata, error) {
+func (d *DynamoDBService) GetFileMetadata(ctx context.Context, fileID string) (*models.FileMetaData, error) {
     result, err := d.client.GetItem(ctx, &dynamodb.GetItemInput{
         TableName: aws.String(d.tableName),
         Key: map[string]types.AttributeValue{
@@ -54,7 +54,7 @@ func (d *DynamoDBService) GetFileMetadata(ctx context.Context, fileID string) (*
         return nil, fmt.Errorf("file not found")
     }
 
-    var metadata models.FileMetadata
+    var metadata models.FileMetaData
     err = attributevalue.UnmarshalMap(result.Item, &metadata)
     if err != nil {
         return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)

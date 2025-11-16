@@ -11,8 +11,8 @@ import (
     "github.com/aws/aws-sdk-go-v2/service/s3"
     "github.com/aws/aws-sdk-go-v2/service/textract"
     "github.com/gin-gonic/gin"
-    "github.com/yourusername/digital-library-backend/handlers"
-    "github.com/yourusername/digital-library-backend/services"
+    "github.com/nkowanitemwani/amp-digital-library-backend/handlers"
+    "github.com/nkowanitemwani/amp-digital-library-backend/services"
 )
 
 func main() {

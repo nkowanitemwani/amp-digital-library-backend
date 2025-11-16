@@ -8,8 +8,8 @@ import (
 
     "github.com/gin-gonic/gin"
     "github.com/google/uuid"
-    "github.com/yourusername/digital-library-backend/models"
-    "github.com/yourusername/digital-library-backend/services"
+    "github.com/nkowanitemwani/amp-digital-library-backend/models"
+    "github.com/nkowanitemwani/amp-digital-library-backend/services"
 )
 
 type FileHandler struct {
@@ -75,7 +75,7 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
     }
 
     // Save initial metadata
-    metadata := &models.FileMetadata{
+    metadata := &models.FileMetaData{
         FileID:     fileID,
         FileName:   file.Filename,
         PDFPath:    pdfKey,
