@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/polly"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/textract"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/nkowanitemwani/amp-digital-library-backend/handlers"
@@ -69,7 +68,6 @@ func main() {
 
 	// Initialize AWS clients
 	s3Client := s3.NewFromConfig(cfg)
-	textractClient := textract.NewFromConfig(cfg)
 	pollyClient := polly.NewFromConfig(cfg)
 	dynamoClient := dynamodb.NewFromConfig(cfg)
 
@@ -87,8 +85,8 @@ func main() {
 	testS3Connection(s3Client, bucketName)
 
 	// Initialize services
-	s3Service := services.NewS3Service(s3Client, bucketName)
-	textractService := services.NewTextractService(textractClient,bucketName)
+	s3Service := services.NewS3Service(s3Client, bucketName, "us-east-1")
+	textractService := services.NewTextractService()
 	pollyService := services.NewPollyService(pollyClient)
 	dynamoService := services.NewDynamoDBService(dynamoClient, tableName)
 

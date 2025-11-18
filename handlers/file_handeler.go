@@ -107,7 +107,7 @@ func (h *FileHandler) processFile(fileID string, pdfData []byte, pdfKey string) 
 
     // Extract text from PDF
     log.Printf("Extracting text from PDF for file: %s", fileID)
-    text, err := h.textractService.ExtractTextFromPDF(ctx, pdfData,pdfKey)
+    text, err := h.textractService.ExtractTextFromPDF(ctx, pdfData)
     if err != nil {
         log.Printf("ERROR: Failed to extract text for file %s: %v", fileID, err)
         h.updateStatus(ctx, fileID, "failed")
@@ -178,29 +178,25 @@ func (h *FileHandler) GetFileStatus(c *gin.Context) {
 }
 
 func (h *FileHandler) GetAudioURL(c *gin.Context) {
-	fileID := c.Param("id")
-	ctx := context.Background()
+    fileID := c.Param("id")
+    ctx := context.Background()
 
-	metadata, err := h.dynamoService.GetFileMetadata(ctx, fileID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
-		return
-	}
+    metadata, err := h.dynamoService.GetFileMetadata(ctx, fileID)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+        return
+    }
 
-	if metadata.Status != "ready" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Audio not ready yet"})
-		return
-	}
+    if metadata.Status != "ready" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Audio not ready yet"})
+        return
+    }
 
-	// Generate presigned URL for audio
-	url, err := h.s3Service.GetPresignedURL(ctx, metadata.AudioPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate URL"})
-		return
-	}
+    // Use direct public URL instead of presigned URL
+    url := h.s3Service.GetPublicURL(metadata.AudioPath)
 
-	c.JSON(http.StatusOK, gin.H{
-		"audio_url": url,
-		"file_name": metadata.FileName,
-	})
+    c.JSON(http.StatusOK, gin.H{
+        "audio_url": url,
+        "file_name": metadata.FileName,
+    })
 }
