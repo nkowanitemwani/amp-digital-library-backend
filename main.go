@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/polly"
@@ -15,6 +17,46 @@ import (
 	"github.com/nkowanitemwani/amp-digital-library-backend/handlers"
 	"github.com/nkowanitemwani/amp-digital-library-backend/services"
 )
+
+func testS3Connection(s3Client *s3.Client, bucketName string) {
+	ctx := context.Background()
+
+	log.Printf("Testing S3 connection to bucket: %s", bucketName)
+
+	// Test 1: Check if bucket exists
+	_, err := s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		log.Fatalf("❌ Cannot access bucket '%s': %v", bucketName, err)
+	}
+	log.Printf("✅ Bucket '%s' exists and is accessible", bucketName)
+
+	// Test 2: Try to upload a test file
+	testKey := "test/connection-test.txt"
+	testData := []byte("Connection test")
+
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(testKey),
+		Body:   bytes.NewReader(testData),
+	})
+	if err != nil {
+		log.Fatalf("❌ Cannot upload to bucket: %v", err)
+	}
+	log.Printf("✅ Successfully uploaded test file")
+
+	// Clean up test file
+	_, err = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(testKey),
+	})
+	if err != nil {
+		log.Printf("⚠️  Warning: Could not delete test file: %v", err)
+	}
+
+	log.Println("✅ S3 connection test passed!")
+}
 
 func main() {
 	// Load AWS configuration
@@ -34,17 +76,19 @@ func main() {
 	// Get configuration from environment
 	bucketName := os.Getenv("S3_BUCKET_NAME")
 	if bucketName == "" {
-		bucketName = "your-library-bucket"
+		bucketName = "amp-digital-library-bucket"
 	}
 
 	tableName := os.Getenv("DYNAMODB_TABLE_NAME")
 	if tableName == "" {
-		tableName = "digital-library-files"
+		tableName = "amp-digital-library-table"
 	}
+
+	testS3Connection(s3Client, bucketName)
 
 	// Initialize services
 	s3Service := services.NewS3Service(s3Client, bucketName)
-	textractService := services.NewTextractService(textractClient)
+	textractService := services.NewTextractService(textractClient,bucketName)
 	pollyService := services.NewPollyService(pollyClient)
 	dynamoService := services.NewDynamoDBService(dynamoClient, tableName)
 
