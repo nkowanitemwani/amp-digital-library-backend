@@ -30,7 +30,7 @@ func (s *S3Service) UploadFile(ctx context.Context, key string, data []byte, con
         Key:         aws.String(key),
         Body:        bytes.NewReader(data),
         ContentType: aws.String(contentType),
-        ACL:         "public-read", // Make object publicly readable
+        // ACL:         "public-read", // Make object publicly readable
     })
     return err
 }

@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,30 +37,59 @@ func NewFileHandler(
 }
 
 func (h *FileHandler) UploadFile(c *gin.Context) {
+	log.Println("=== Upload Request Started ===")
+	log.Printf("Content-Type: %s", c.Request.Header.Get("Content-Type"))
+	
 	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
+		log.Printf("ERROR: Failed to get form file: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded", "details": err.Error()})
 		return
 	}
 
-	// Validate file type
-	if file.Header.Get("Content-Type") != "application/pdf" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Only PDF files are allowed"})
+	log.Printf("File received: %s, Size: %d, Content-Type: %s", 
+		file.Filename, file.Size, file.Header.Get("Content-Type"))
+
+	// Validate file type - be more lenient
+	contentType := file.Header.Get("Content-Type")
+	if contentType != "application/pdf" && contentType != "application/octet-stream" {
+		log.Printf("ERROR: Invalid content type: %s", contentType)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Only PDF files are allowed",
+			"received_type": contentType,
+		})
+		return
+	}
+
+	// Validate file extension as backup
+	if !strings.HasSuffix(strings.ToLower(file.Filename), ".pdf") {
+		log.Printf("ERROR: Invalid file extension: %s", file.Filename)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File must have .pdf extension"})
 		return
 	}
 
 	// Read file data
 	fileData, err := file.Open()
 	if err != nil {
+		log.Printf("ERROR: Failed to open file: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
 		return
 	}
 	defer fileData.Close()
 
-	pdfBytes := make([]byte, file.Size)
-	_, err = fileData.Read(pdfBytes)
+	pdfBytes, err := io.ReadAll(fileData)
 	if err != nil {
+		log.Printf("ERROR: Failed to read file data: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file data"})
+		return
+	}
+
+	log.Printf("Successfully read %d bytes from file", len(pdfBytes))
+
+	// Validate PDF magic bytes
+	if len(pdfBytes) < 4 || string(pdfBytes[:4]) != "%PDF" {
+		log.Printf("ERROR: File is not a valid PDF (magic bytes check failed)")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File is not a valid PDF"})
 		return
 	}
 
@@ -69,11 +100,15 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 	ctx := context.Background()
 
 	// Upload PDF to S3
+	log.Printf("Uploading PDF to S3: %s", pdfKey)
 	err = h.s3Service.UploadFile(ctx, pdfKey, pdfBytes, "application/pdf")
 	if err != nil {
+		log.Printf("ERROR: Failed to upload to S3: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload PDF"})
 		return
 	}
+
+	log.Printf("Successfully uploaded PDF to S3: %s", pdfKey)
 
 	// Save initial metadata
 	metadata := &models.FileMetaData{
@@ -86,12 +121,17 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 
 	err = h.dynamoService.SaveFileMetadata(ctx, metadata)
 	if err != nil {
+		log.Printf("ERROR: Failed to save metadata: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save metadata"})
 		return
 	}
 
-	// Process in background (in production, use SQS or Lambda)
+	log.Printf("Metadata saved for file: %s", fileID)
+
+	// Process in background
 	go h.processFile(fileID, pdfBytes, pdfKey)
+
+	log.Printf("=== Upload Request Completed: %s ===", fileID)
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"file_id": fileID,
