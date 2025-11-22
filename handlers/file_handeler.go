@@ -36,6 +36,46 @@ func NewFileHandler(
 	}
 }
 
+
+func (h *FileHandler) GetAllFiles(c *gin.Context) {
+	ctx := context.Background()
+
+	log.Println("Fetching all files from database")
+
+	// Get all file metadata from DynamoDB
+	allMetadata, err := h.dynamoService.GetAllFileMetadata(ctx)
+	if err != nil {
+		log.Printf("ERROR: Failed to fetch files: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch files"})
+		return
+	}
+
+	// Build response with title and audio URL
+	var files []gin.H
+	for _, metadata := range allMetadata {
+		file := gin.H{
+			"file_id":   metadata.FileID,
+			"title":     metadata.FileName,
+			"status":    metadata.Status,
+			"uploaded_at": metadata.UploadedAt,
+		}
+
+		// Only include audio URL if file is ready
+		if metadata.Status == "ready" && metadata.AudioPath != "" {
+			file["audio_url"] = h.s3Service.GetPublicURL(metadata.AudioPath)
+		}
+
+		files = append(files, file)
+	}
+
+	log.Printf("Successfully fetched %d files", len(files))
+	c.JSON(http.StatusOK, gin.H{
+		"files": files,
+		"count": len(files),
+	})
+}
+
+
 func (h *FileHandler) UploadFile(c *gin.Context) {
 	log.Println("=== Upload Request Started ===")
 	log.Printf("Content-Type: %s", c.Request.Header.Get("Content-Type"))

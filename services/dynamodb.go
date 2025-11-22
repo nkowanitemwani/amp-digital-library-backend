@@ -46,6 +46,27 @@ func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models
 }
 
 
+func (s *DynamoDBService) GetAllFileMetadata(ctx context.Context) ([]*models.FileMetaData, error) {
+	input := &dynamodb.ScanInput{
+		TableName: aws.String(s.tableName),
+	}
+
+	result, err := s.client.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan table: %w", err)
+	}
+
+	var files []*models.FileMetaData
+	err = attributevalue.UnmarshalListOfMaps(result.Items, &files)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal items: %w", err)
+	}
+
+	return files, nil
+}
+
+
+
 func (d *DynamoDBService) GetFileMetadata(ctx context.Context, fileID string) (*models.FileMetaData, error) {
     result, err := d.client.GetItem(ctx, &dynamodb.GetItemInput{
         TableName: aws.String(d.tableName),

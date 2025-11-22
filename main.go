@@ -106,6 +106,7 @@ func main() {
 
 	// Routes
 	router.POST("/upload", fileHandler.UploadFile)
+	router.GET("/files", fileHandler.GetAllFiles)
 	router.GET("/files/:id", fileHandler.GetFileStatus)
 	router.GET("/files/:id/audio", fileHandler.GetAudioURL)
 
