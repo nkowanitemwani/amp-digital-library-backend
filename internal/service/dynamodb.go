@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/nkowanitemwani/amp-digital-library-backend/models"
+	// "github.com/nkowanitemwani/amp-digital-library-backend/models"
 )
 
 type DynamoDBService struct {
@@ -27,7 +27,7 @@ func NewDynamoDBService(client *dynamodb.Client, tableName string) *DynamoDBServ
 func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models.FileMetaData) error {
     item, err := attributevalue.MarshalMap(metadata)
     if err != nil {
-        log.Println("❌ MarshalMap error:", err)
+        log.Println("MarshalMap error:", err)
         return fmt.Errorf("failed to marshal metadata: %w", err)
     }
 
@@ -37,9 +37,9 @@ func (d *DynamoDBService) SaveFileMetadata(ctx context.Context, metadata *models
     })
 
     if err != nil {
-        log.Println("❌ PutItem error:", err)
+        log.Println("PutItem error:", err)
     } else {
-        log.Println("✅ PutItem success:", metadata.FileID)
+        log.Println("PutItem success:", metadata.FileID)
     }
 
     return err
