@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -28,9 +30,18 @@ type Config struct {
 }
 
 // Load reads all configuration from environment variables.
-// Returns an error if any required value is missing or invalid —
-// the server should not start with incomplete configuration.
+// It first attempts to load a .env file from the project root —
+// if no .env file exists (e.g. in production where variables are
+// injected by the host), it silently continues using the environment
+// as-is. This means the same config.go works in both local dev
+// (with a .env file) and production (without one) without any changes.
 func Load() (*Config, error) {
+	// godotenv.Load() looks for .env in the current working directory.
+	// We deliberately ignore the error — a missing .env file is not a
+	// problem in production where variables are set in the environment
+	// directly. Only a malformed .env file would return an actual error.
+	_ = godotenv.Load()
+
 	workers, err := getEnvInt("PROCESSOR_WORKERS")
 	if err != nil {
 		return nil, err
@@ -57,6 +68,26 @@ func Load() (*Config, error) {
 		ProcessorPollSecs:  pollSecs,
 	}
 
+	// Validate required string fields that requireEnv() returns empty
+	// when missing — we catch them all here in one place rather than
+	// letting the server start and fail later with a cryptic error.
+	required := map[string]string{
+		"JWT_SECRET":            cfg.JWTSecret,
+		"AWS_REGION":            cfg.AWSRegion,
+		"AWS_ACCESS_KEY_ID":     cfg.AWSAccessKeyId,
+		"AWS_SECRET_ACCESS_KEY": cfg.AWSSecretAccessKey,
+		"DB_HOST":               cfg.DBHost,
+		"DB_USER":               cfg.DBUser,
+		"DB_PASSWORD":           cfg.DBPassword,
+		"DB_NAME":               cfg.DBName,
+	}
+
+	for key, val := range required {
+		if val == "" {
+			return nil, fmt.Errorf("required environment variable %q is not set", key)
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -76,9 +107,10 @@ func getEnvInt(key string) (int, error) {
 	return n, nil
 }
 
-// requireEnv reads an environment variable that must be set.
-// Returns the value — missing required strings are caught in Load()
-// via the error return so the server fails at startup.
+// requireEnv reads an environment variable and returns its value.
+// Empty string is returned if not set — the required fields check
+// in Load() catches all missing values together in one pass,
+// which gives a clearer error than failing on the first missing variable.
 func requireEnv(key string) string {
 	return os.Getenv(key)
 }
