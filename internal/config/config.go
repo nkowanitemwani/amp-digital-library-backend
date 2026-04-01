@@ -40,7 +40,7 @@ func Load() (*Config, error) {
 	// We deliberately ignore the error — a missing .env file is not a
 	// problem in production where variables are set in the environment
 	// directly. Only a malformed .env file would return an actual error.
-	_ = godotenv.Load()
+	_ = godotenv.Load("/../../.env")
 
 	workers, err := getEnvInt("PROCESSOR_WORKERS")
 	if err != nil {
