@@ -74,6 +74,18 @@ type Book struct {
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
+// AuditEntry represents a single row written to the audit_log table.
+// The audit log is append-only — entries are never updated or deleted.
+// Metadata holds flexible key-value context (e.g. failure reason, IP address)
+// without requiring schema changes.
+type AuditEntry struct {
+	SchoolID *string           `db:"school_id"` // nil for system-level events
+	Action   string            `db:"action"`    // e.g. "book.created", "school.login.failed"
+	Entity   string            `db:"entity"`    // e.g. "book", "category", "school"
+	EntityID *string           `db:"entity_id"` // nil for events not tied to a specific row
+	Metadata map[string]string // serialised to JSONB before insert
+}
+
 // =============================================================
 // BOOK STATUS CONSTANTS
 // Using constants instead of raw strings means a typo in

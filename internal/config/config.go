@@ -13,6 +13,8 @@ type Config struct {
 	DBUser         string
 	DBPassword     string
 	DBName         string
+	ProcessorWorkers    int    
+	ProcessorPollSecs   int    
 }
 
 func Load() *Config {

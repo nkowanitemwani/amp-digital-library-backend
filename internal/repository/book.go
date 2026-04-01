@@ -260,6 +260,32 @@ func (r *BookRepository) UpdateAudioReady(ctx context.Context, tx *sql.Tx, id, a
 	return nil
 }
 
+// UpdatePDFPath sets the pdf_path on a book after the file has been
+// successfully saved to storage. Uses optimistic locking to guard
+// against the unlikely case of a concurrent update on a brand new row.
+func (r *BookRepository) UpdatePDFPath(ctx context.Context, id, pdfPath string, version int) error {
+	query := `
+		UPDATE books
+		SET pdf_path = $1,
+		    version  = version + 1
+		WHERE id = $2 AND version = $3`
+
+	result, err := r.db.ExecContext(ctx, query, pdfPath, id, version)
+	if err != nil {
+		return fmt.Errorf("update pdf path: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update pdf path rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrConflict
+	}
+
+	return nil
+}
+
 // UpdateStatusFailed marks a book as failed.
 // Called by the processor when any step (text extraction, Polly, upload) fails.
 // Uses a plain ExecContext rather than a transaction because failure
