@@ -12,28 +12,26 @@ import (
 
 // =============================================================
 // BOOK SERVICE
-// Business rules for uploading and managing books.
-// The processor (processor.go) handles the async PDF → audio pipeline.
-// This service handles the synchronous part: validate, store PDF,
-// create the DB row, then hand off to the processor via the DB queue.
+// Business rules for uploading and managing books within grades.
+// Books are scoped to a grade — a grade can only see and manage
+// its own books.
 // =============================================================
 
-// Sentinel errors specific to books.
 var (
-	// ErrUnitNumberTaken is returned when a school tries to add a book
-	// with a unit number that already exists in that category.
-	ErrUnitNumberTaken = errors.New("a book with this unit number already exists in the category")
+	// ErrUnitNumberTaken is returned when the unit number already exists
+	// within this category.
+	ErrUnitNumberTaken = errors.New("a book with this unit number already exists in this category")
 
-	// ErrCategoryNotFound is returned when the specified category does
-	// not exist or does not belong to the requesting school.
+	// ErrCategoryNotFound is returned when the category does not exist
+	// or does not belong to the requesting grade.
 	ErrCategoryNotFound = errors.New("category not found")
 
 	// ErrBookNotReady is returned when audio is requested for a book
 	// that has not finished processing yet.
-	ErrBookNotReady = errors.New("audio is not ready yet — book is still processing")
+	ErrBookNotReady = errors.New("audio is not ready yet — this book is still being processed")
 
 	// ErrBookFailed is returned when audio is requested for a book
-	// whose processing failed. The admin should re-upload the book.
+	// whose processing failed. The admin should re-upload.
 	ErrBookFailed = errors.New("book processing failed — please re-upload the file")
 )
 
@@ -41,6 +39,7 @@ var (
 type BookService struct {
 	bookRepo     *repository.BookRepository
 	categoryRepo *repository.CategoryRepository
+	gradeRepo    *repository.GradeRepository
 	auditRepo    *repository.AuditRepository
 	store        storage.Storage
 }
@@ -49,12 +48,14 @@ type BookService struct {
 func NewBookService(
 	bookRepo *repository.BookRepository,
 	categoryRepo *repository.CategoryRepository,
+	gradeRepo *repository.GradeRepository,
 	auditRepo *repository.AuditRepository,
 	store storage.Storage,
 ) *BookService {
 	return &BookService{
 		bookRepo:     bookRepo,
 		categoryRepo: categoryRepo,
+		gradeRepo:    gradeRepo,
 		auditRepo:    auditRepo,
 		store:        store,
 	}
@@ -62,29 +63,33 @@ func NewBookService(
 
 // Upload saves a PDF and creates a book row with status 'processing'.
 // The processor picks up the row from the DB queue and generates audio
-// asynchronously — the admin does not wait for that to complete here.
+// asynchronously — the response is returned immediately.
 //
-// schoolID comes from the validated JWT — never from the request body.
-// pdfData is the raw bytes of the validated PDF file.
-func (s *BookService) Upload(ctx context.Context, schoolID string, req *models.CreateBookRequest, pdfData []byte) (*models.BookResponse, error) {
-	// Verify the category exists and belongs to this school.
-	// This is the application-level ownership check — the DB composite FK
-	// is the structural guarantee underneath it.
-	_, err := s.categoryRepo.GetByID(ctx, req.CategoryID, schoolID)
-	if errors.Is(err, repository.ErrNotFound) {
-		return nil, ErrCategoryNotFound
+// schoolID and gradeID come from the validated JWT — never from the request body.
+func (s *BookService) Upload(ctx context.Context, schoolID, gradeID string, req *models.CreateBookRequest, pdfData []byte) (*models.BookResponse, error) {
+	// Verify the grade belongs to this school.
+	if _, err := s.gradeRepo.GetByID(ctx, gradeID, schoolID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("verify grade: %w", err)
 	}
-	if err != nil {
+
+	// Verify the category belongs to this grade.
+	// The composite FK in the DB enforces this structurally, but we
+	// check here too to return a meaningful error before hitting the DB.
+	if _, err := s.categoryRepo.GetByID(ctx, req.CategoryID, gradeID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrCategoryNotFound
+		}
 		return nil, fmt.Errorf("verify category: %w", err)
 	}
 
-	// Build the storage key before creating the DB row so we have a key
-	// to store. We use a temporary placeholder ID here — the real book ID
-	// comes back from the INSERT RETURNING below.
-	// To avoid this chicken-and-egg, we create the book row first (with no
-	// pdf_path) and update it after saving the file.
+	// Create the book row first to get the real book ID, then save
+	// the PDF using that ID as the storage key.
 	book, err := s.bookRepo.Create(ctx, &models.Book{
 		SchoolID:   schoolID,
+		GradeID:    gradeID,
 		CategoryID: req.CategoryID,
 		Title:      req.Title,
 		Author:     req.Author,
@@ -97,24 +102,22 @@ func (s *BookService) Upload(ctx context.Context, schoolID string, req *models.C
 		return nil, fmt.Errorf("create book record: %w", err)
 	}
 
-	// Now we have the real book ID — build the storage key and save the PDF.
+	// Save the PDF using the book's UUID as the key.
 	pdfKey := storage.PDFKey(book.ID)
 	if err := s.store.Save(ctx, pdfKey, pdfData, "application/pdf"); err != nil {
-		// The book row exists but the file did not save. Mark the book as
-		// failed so it does not sit in 'processing' forever, then surface
-		// the error to the admin.
+		// PDF save failed — mark the book as failed so it does not sit
+		// in 'processing' forever, then surface the error.
 		s.bookRepo.UpdateStatusFailed(ctx, book.ID)
 		return nil, fmt.Errorf("save pdf: %w", err)
 	}
 
-	// Update the book row with the PDF path now that the file is saved.
-	// The processor uses this path to fetch the PDF for text extraction.
+	// Record the PDF path on the book row now that the file exists.
 	if err := s.bookRepo.UpdatePDFPath(ctx, book.ID, pdfKey, book.Version); err != nil {
 		return nil, fmt.Errorf("update pdf path: %w", err)
 	}
 
-	// Refresh the book to get the updated fields before building the response.
-	book, err = s.bookRepo.GetByID(ctx, book.ID, schoolID)
+	// Refresh to get the updated version before building the response.
+	book, err = s.bookRepo.GetByID(ctx, book.ID, gradeID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch created book: %w", err)
 	}
@@ -127,6 +130,7 @@ func (s *BookService) Upload(ctx context.Context, schoolID string, req *models.C
 		Metadata: map[string]string{
 			"title":       book.Title,
 			"unit_number": fmt.Sprintf("%d", book.UnitNumber),
+			"grade_id":    gradeID,
 		},
 	})
 
@@ -134,9 +138,9 @@ func (s *BookService) Upload(ctx context.Context, schoolID string, req *models.C
 }
 
 // GetByID returns a single book.
-// schoolID from the JWT ensures a school can only fetch their own books.
-func (s *BookService) GetByID(ctx context.Context, schoolID, bookID string) (*models.BookResponse, error) {
-	book, err := s.bookRepo.GetByID(ctx, bookID, schoolID)
+// gradeID from the JWT ensures a grade can only fetch their own books.
+func (s *BookService) GetByID(ctx context.Context, gradeID, bookID string) (*models.BookResponse, error) {
+	book, err := s.bookRepo.GetByID(ctx, bookID, gradeID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, ErrNotFound
 	}
@@ -148,18 +152,16 @@ func (s *BookService) GetByID(ctx context.Context, schoolID, bookID string) (*mo
 }
 
 // GetByCategory returns all books in a category ordered by unit number.
-// Verifies the category belongs to the school before querying books.
-func (s *BookService) GetByCategory(ctx context.Context, schoolID, categoryID string) ([]*models.BookResponse, error) {
-	// Ownership check — ensures the category belongs to this school.
-	_, err := s.categoryRepo.GetByID(ctx, categoryID, schoolID)
-	if errors.Is(err, repository.ErrNotFound) {
-		return nil, ErrCategoryNotFound
-	}
-	if err != nil {
+func (s *BookService) GetByCategory(ctx context.Context, gradeID, categoryID string) ([]*models.BookResponse, error) {
+	// Verify the category belongs to this grade.
+	if _, err := s.categoryRepo.GetByID(ctx, categoryID, gradeID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrCategoryNotFound
+		}
 		return nil, fmt.Errorf("verify category: %w", err)
 	}
 
-	books, err := s.bookRepo.GetAllByCategory(ctx, categoryID, schoolID)
+	books, err := s.bookRepo.GetAllByCategory(ctx, categoryID, gradeID)
 	if err != nil {
 		return nil, fmt.Errorf("get books by category: %w", err)
 	}
@@ -173,10 +175,8 @@ func (s *BookService) GetByCategory(ctx context.Context, schoolID, categoryID st
 }
 
 // Delete removes a book and its associated files from storage.
-// schoolID from the JWT prevents cross-school deletion.
-func (s *BookService) Delete(ctx context.Context, schoolID, bookID string) error {
-	// Fetch first so we have the storage keys to clean up.
-	book, err := s.bookRepo.GetByID(ctx, bookID, schoolID)
+func (s *BookService) Delete(ctx context.Context, schoolID, gradeID, bookID string) error {
+	book, err := s.bookRepo.GetByID(ctx, bookID, gradeID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound
 	}
@@ -184,16 +184,13 @@ func (s *BookService) Delete(ctx context.Context, schoolID, bookID string) error
 		return fmt.Errorf("get book for delete: %w", err)
 	}
 
-	// Delete the DB row first. If storage cleanup fails after this we lose
-	// the file references but the book is gone from the library — acceptable.
-	// The alternative (delete files first) risks orphaned DB rows if the
-	// DB delete fails, which is harder to recover from.
-	if err := s.bookRepo.Delete(ctx, bookID, schoolID); err != nil {
+	// Delete the DB row first — if file cleanup fails we lose the
+	// orphaned files but the book is cleanly gone from the library.
+	if err := s.bookRepo.Delete(ctx, bookID, gradeID); err != nil {
 		return fmt.Errorf("delete book record: %w", err)
 	}
 
-	// Best-effort file cleanup — log failures but do not surface them,
-	// since the book is already removed from the library.
+	// Best-effort file cleanup.
 	if book.PDFPath != nil {
 		if err := s.store.Delete(ctx, *book.PDFPath); err != nil {
 			fmt.Printf("warning: could not delete pdf %s: %v\n", *book.PDFPath, err)
@@ -217,13 +214,12 @@ func (s *BookService) Delete(ctx context.Context, schoolID, bookID string) error
 
 // =============================================================
 // RESPONSE BUILDER
-// AudioURL is only set when the book is ready — the client receives
-// an empty string until then, which omitempty drops from the JSON.
 // =============================================================
 
 func toBookResponse(b *models.Book, store storage.Storage) *models.BookResponse {
 	resp := &models.BookResponse{
 		ID:         b.ID,
+		GradeID:    b.GradeID,
 		CategoryID: b.CategoryID,
 		Title:      b.Title,
 		Author:     b.Author,
@@ -233,8 +229,6 @@ func toBookResponse(b *models.Book, store storage.Storage) *models.BookResponse 
 	}
 
 	// Only resolve the audio URL when the book is fully processed.
-	// Returning a URL for an unready book would point to a file that
-	// does not exist yet.
 	if b.Status == models.BookStatusReady && b.AudioPath != nil {
 		resp.AudioURL = store.URL(*b.AudioPath)
 	}

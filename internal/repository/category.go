@@ -10,6 +10,8 @@ import (
 )
 
 // CategoryRepository handles all database operations for the categories table.
+// Categories are scoped to a grade — every method takes a gradeID so a grade
+// can never read or modify another grade's categories.
 type CategoryRepository struct {
 	db *sql.DB
 }
@@ -19,20 +21,20 @@ func NewCategoryRepository(db *sql.DB) *CategoryRepository {
 	return &CategoryRepository{db: db}
 }
 
-// Create inserts a new category for a school and returns the created row.
-// The UNIQUE constraint on (school_id, name) in the DB will reject
-// duplicate category names for the same school — the service layer
-// translates that DB error into a meaningful API error.
-func (r *CategoryRepository) Create(ctx context.Context, schoolID, name string) (*models.Category, error) {
+// Create inserts a new category for a grade and returns the created row.
+// The UNIQUE constraint on (grade_id, name) in the DB will reject duplicate
+// category names for the same grade.
+func (r *CategoryRepository) Create(ctx context.Context, schoolID, gradeID, name string) (*models.Category, error) {
 	query := `
-		INSERT INTO categories (school_id, name)
-		VALUES ($1, $2)
-		RETURNING id, school_id, name, created_at, updated_at`
+		INSERT INTO categories (school_id, grade_id, name)
+		VALUES ($1, $2, $3)
+		RETURNING id, school_id, grade_id, name, created_at, updated_at`
 
 	cat := &models.Category{}
-	err := r.db.QueryRowContext(ctx, query, schoolID, name).Scan(
+	err := r.db.QueryRowContext(ctx, query, schoolID, gradeID, name).Scan(
 		&cat.ID,
 		&cat.SchoolID,
+		&cat.GradeID,
 		&cat.Name,
 		&cat.CreatedAt,
 		&cat.UpdatedAt,
@@ -44,44 +46,33 @@ func (r *CategoryRepository) Create(ctx context.Context, schoolID, name string) 
 	return cat, nil
 }
 
-// GetAllBySchool returns every category belonging to a school,
+// GetAllByGrade returns every category belonging to a grade,
 // ordered alphabetically by name.
-// Returns an empty slice (not nil) when the school has no categories
-// so the API always returns a JSON array, never null.
-func (r *CategoryRepository) GetAllBySchool(ctx context.Context, schoolID string) ([]*models.Category, error) {
+// Returns an empty slice (not nil) so the API always returns a JSON array.
+func (r *CategoryRepository) GetAllByGrade(ctx context.Context, gradeID string) ([]*models.Category, error) {
 	query := `
-		SELECT id, school_id, name, created_at, updated_at
+		SELECT id, school_id, grade_id, name, created_at, updated_at
 		FROM categories
-		WHERE school_id = $1
+		WHERE grade_id = $1
 		ORDER BY name ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, schoolID)
+	rows, err := r.db.QueryContext(ctx, query, gradeID)
 	if err != nil {
 		return nil, fmt.Errorf("get categories: %w", err)
 	}
-	// Always close rows when done — failing to do so leaks the DB connection
-	// back to the pool in a broken state.
 	defer rows.Close()
 
-	// Pre-allocate as empty slice so JSON serialises to [] not null
-	// when there are no rows.
 	categories := []*models.Category{}
 	for rows.Next() {
 		cat := &models.Category{}
 		if err := rows.Scan(
-			&cat.ID,
-			&cat.SchoolID,
-			&cat.Name,
-			&cat.CreatedAt,
-			&cat.UpdatedAt,
+			&cat.ID, &cat.SchoolID, &cat.GradeID,
+			&cat.Name, &cat.CreatedAt, &cat.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan category: %w", err)
 		}
 		categories = append(categories, cat)
 	}
-
-	// rows.Err() captures any error that occurred during iteration —
-	// a plain loop exit does not guarantee the query completed cleanly.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate categories: %w", err)
 	}
@@ -90,21 +81,17 @@ func (r *CategoryRepository) GetAllBySchool(ctx context.Context, schoolID string
 }
 
 // GetByID fetches a single category by its primary key.
-// schoolID is required — it ensures a school can only fetch their
-// own categories even if they somehow supply another school's category ID.
-func (r *CategoryRepository) GetByID(ctx context.Context, id, schoolID string) (*models.Category, error) {
+// gradeID is required — ensures a grade can only fetch their own categories.
+func (r *CategoryRepository) GetByID(ctx context.Context, id, gradeID string) (*models.Category, error) {
 	query := `
-		SELECT id, school_id, name, created_at, updated_at
+		SELECT id, school_id, grade_id, name, created_at, updated_at
 		FROM categories
-		WHERE id = $1 AND school_id = $2`
+		WHERE id = $1 AND grade_id = $2`
 
 	cat := &models.Category{}
-	err := r.db.QueryRowContext(ctx, query, id, schoolID).Scan(
-		&cat.ID,
-		&cat.SchoolID,
-		&cat.Name,
-		&cat.CreatedAt,
-		&cat.UpdatedAt,
+	err := r.db.QueryRowContext(ctx, query, id, gradeID).Scan(
+		&cat.ID, &cat.SchoolID, &cat.GradeID,
+		&cat.Name, &cat.CreatedAt, &cat.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -117,16 +104,13 @@ func (r *CategoryRepository) GetByID(ctx context.Context, id, schoolID string) (
 }
 
 // Delete removes a category by ID.
-// schoolID is required for the same ownership reason as GetByID.
+// gradeID is required for ownership verification.
 // The DB RESTRICT foreign key on books.category_id means this DELETE
-// will fail if any books still reference this category — the service
-// layer surfaces that as a meaningful error to the client.
-func (r *CategoryRepository) Delete(ctx context.Context, id, schoolID string) error {
-	query := `
-		DELETE FROM categories
-		WHERE id = $1 AND school_id = $2`
-
-	result, err := r.db.ExecContext(ctx, query, id, schoolID)
+// will fail if any books still reference this category.
+func (r *CategoryRepository) Delete(ctx context.Context, id, gradeID string) error {
+	result, err := r.db.ExecContext(ctx,
+		`DELETE FROM categories WHERE id = $1 AND grade_id = $2`, id, gradeID,
+	)
 	if err != nil {
 		return fmt.Errorf("delete category: %w", err)
 	}
@@ -135,9 +119,6 @@ func (r *CategoryRepository) Delete(ctx context.Context, id, schoolID string) er
 	if err != nil {
 		return fmt.Errorf("delete category rows affected: %w", err)
 	}
-
-	// Zero rows affected means the category either doesn't exist or
-	// belongs to a different school — both cases are "not found" to the caller.
 	if rows == 0 {
 		return ErrNotFound
 	}

@@ -9,36 +9,24 @@ import (
 	"github.com/nkowanitemwani/amp-digital-library-backend/internal/service"
 )
 
-// contextKey is an unexported type used as the key for values stored
-// in the request context. Using a custom type (not a plain string)
-// prevents key collisions if another package stores values with the
-// same string key — the types must match, not just the values.
 type contextKey string
 
 const (
-	// schoolIDKey is the context key under which the authenticated
-	// school's ID is stored after a successful JWT validation.
-	// Handlers retrieve it with SchoolIDFromContext().
+	// schoolIDKey — always the school the authenticated entity belongs to.
 	schoolIDKey contextKey = "school_id"
+
+	// subjectIDKey — the ID of the entity that logged in.
+	// Admin: school UUID. Grade: grade UUID.
+	subjectIDKey contextKey = "subject_id"
+
+	// roleKey — models.RoleAdmin or models.RoleGrade.
+	roleKey contextKey = "role"
 )
 
-// RequireAuth is a Gin middleware that validates the JWT on every
-// protected route. It must be attached to any route group that requires
-// a logged-in school.
-//
-// On success: extracts the school_id from the token and stores it in
-// the request context, then calls c.Next() to continue to the handler.
-//
-// On failure: writes a 401 response and calls c.Abort() so no further
-// handlers in the chain are executed — the request stops here.
-//
-// schoolService is passed in (not global) so this middleware can be
-// tested independently by injecting a mock service.
+// RequireAuth validates the JWT and stores school_id, subject_id, and
+// role in the request context. Must precede RequireAdmin or RequireGrade.
 func RequireAuth(schoolService *service.SchoolService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Extract the token from the Authorization header.
-		// The expected format is: "Bearer <token>"
-		// Any other format is rejected immediately.
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, models.ErrorResponse{
@@ -48,9 +36,6 @@ func RequireAuth(schoolService *service.SchoolService) gin.HandlerFunc {
 			return
 		}
 
-		// Split on a single space — "Bearer" and the token.
-		// We check for exactly two parts to reject malformed headers
-		// like "Bearer" with no token, or multiple spaces.
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
 			c.JSON(http.StatusUnauthorized, models.ErrorResponse{
@@ -60,14 +45,8 @@ func RequireAuth(schoolService *service.SchoolService) gin.HandlerFunc {
 			return
 		}
 
-		tokenStr := parts[1]
-
-		// ValidateToken verifies the signature, checks the expiry, and
-		// returns the school_id embedded in the claims.
-		schoolID, err := schoolService.ValidateToken(tokenStr)
+		schoolID, subjectID, role, err := schoolService.ValidateToken(parts[1])
 		if err != nil {
-			// Do not include the raw error — it may contain internal details
-			// about the JWT library. A generic message is enough for the client.
 			c.JSON(http.StatusUnauthorized, models.ErrorResponse{
 				Error: "invalid or expired token",
 			})
@@ -75,36 +54,78 @@ func RequireAuth(schoolService *service.SchoolService) gin.HandlerFunc {
 			return
 		}
 
-		// Store the school_id in the context so handlers can retrieve it
-		// without re-parsing the token. The handler must never accept
-		// school_id from the request body — always read it from here.
-		c.Set(string(schoolIDKey), schoolID)
+		c.Set(string(schoolIDKey),  schoolID)
+		c.Set(string(subjectIDKey), subjectID)
+		c.Set(string(roleKey),      role)
 
 		c.Next()
 	}
 }
 
-// SchoolIDFromContext retrieves the authenticated school's ID from the
-// Gin context. Call this in every protected handler instead of reading
-// school_id from the request body or URL parameters.
-//
-// Panics if called on a route that does not have RequireAuth middleware —
-// this is intentional. A missing school_id on a protected route is a
-// programming error, not a runtime error, and should be caught immediately
-// during development rather than silently returning empty strings in production.
+// RequireAdmin aborts with 403 if the authenticated entity is not an admin.
+// Must follow RequireAuth in the middleware chain.
+func RequireAdmin(c *gin.Context) {
+	role, _ := c.Get(string(roleKey))
+	if role != models.RoleAdmin {
+		c.JSON(http.StatusForbidden, models.ErrorResponse{
+			Error: "this action requires an admin account",
+		})
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+// RequireGrade aborts with 403 if the authenticated entity is not a grade.
+// Must follow RequireAuth in the middleware chain.
+func RequireGrade(c *gin.Context) {
+	role, _ := c.Get(string(roleKey))
+	if role != models.RoleGrade {
+		c.JSON(http.StatusForbidden, models.ErrorResponse{
+			Error: "this route requires a grade account",
+		})
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+// SchoolIDFromContext retrieves the school_id from the Gin context.
+// Always present after RequireAuth on any protected route.
 func SchoolIDFromContext(c *gin.Context) string {
 	val, exists := c.Get(string(schoolIDKey))
 	if !exists {
-		// This should never happen on a route protected by RequireAuth.
-		// If it does, it means a handler was accidentally registered
-		// outside the auth middleware group.
 		panic("SchoolIDFromContext called on unprotected route — ensure RequireAuth middleware is applied")
 	}
-
 	schoolID, ok := val.(string)
 	if !ok || schoolID == "" {
 		panic("school_id in context is not a valid string — this is a bug in the auth middleware")
 	}
-
 	return schoolID
+}
+
+// GradeIDFromContext retrieves the grade_id (subject_id) from the context.
+// Only valid on routes protected by RequireGrade — panics otherwise
+// so wiring mistakes are caught immediately in development.
+func GradeIDFromContext(c *gin.Context) string {
+	role, _ := c.Get(string(roleKey))
+	if role != models.RoleGrade {
+		panic("GradeIDFromContext called on a non-grade route — use RequireGrade middleware")
+	}
+	val, exists := c.Get(string(subjectIDKey))
+	if !exists {
+		panic("subject_id not found in context — this is a bug in the auth middleware")
+	}
+	gradeID, ok := val.(string)
+	if !ok || gradeID == "" {
+		panic("subject_id in context is not a valid string — this is a bug in the auth middleware")
+	}
+	return gradeID
+}
+
+// RoleFromContext retrieves the role from the Gin context.
+func RoleFromContext(c *gin.Context) string {
+	val, _ := c.Get(string(roleKey))
+	role, _ := val.(string)
+	return role
 }

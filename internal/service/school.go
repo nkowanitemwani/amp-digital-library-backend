@@ -187,7 +187,7 @@ func (s *SchoolService) Login(ctx context.Context, req *models.LoginRequest) (*m
 		fmt.Printf("record successful login: %v\n", err)
 	}
 
-	token, err := s.generateToken(school.ID)
+	token, err := s.generateToken(school.ID, school.ID, models.RoleAdmin)
 	if err != nil {
 		return nil, fmt.Errorf("generate token: %w", err)
 	}
@@ -226,21 +226,26 @@ func (s *SchoolService) GetByID(ctx context.Context, id string) (*models.SchoolR
 // =============================================================
 
 // jwtClaims are the fields embedded in the JWT payload.
-// Only school_id is stored — never email or password.
-// The token is signed so it cannot be tampered with, but it is
-// not encrypted — do not put sensitive data in it.
+// role distinguishes admin (school) from grade (shared class account)
+// so middleware can enforce route-level access control without a DB lookup.
+// school_id is always present — for grades it is the school they belong to,
+// allowing them to read that school's content.
 type jwtClaims struct {
-	SchoolID string `json:"school_id"`
+	SchoolID  string `json:"school_id"`
+	SubjectID string `json:"subject_id"` // school.id for admin, grade.id for grade
+	Role      string `json:"role"`        // models.RoleAdmin or models.RoleGrade
 	jwt.RegisteredClaims
 }
 
-// generateToken creates a signed JWT containing the school's ID.
-func (s *SchoolService) generateToken(schoolID string) (string, error) {
+// generateToken creates a signed JWT for either an admin or a grade account.
+// subjectID is the ID of the entity logging in (school ID for admins,
+// grade ID for grades). role controls which routes they can access.
+func (s *SchoolService) generateToken(schoolID, subjectID, role string) (string, error) {
 	claims := jwtClaims{
-		SchoolID: schoolID,
+		SchoolID:  schoolID,
+		SubjectID: subjectID,
+		Role:      role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			// ExpiresAt is validated automatically by the JWT library
-			// on every call to ValidateToken — no manual check needed.
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
@@ -257,12 +262,12 @@ func (s *SchoolService) generateToken(schoolID string) (string, error) {
 }
 
 // ValidateToken parses and validates a JWT string, returning the
-// school_id embedded in it. Called by the auth middleware on every
-// protected request.
+// school_id, subject_id and role embedded in it. Called by the auth
+// middleware on every protected request.
 // Returns an error if the token is expired, malformed, or has an
 // invalid signature.
-func (s *SchoolService) ValidateToken(tokenStr string) (string, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &jwtClaims{}, func(t *jwt.Token) (any, error) {
+func (s *SchoolService) ValidateToken(tokenStr string) (schoolID, subjectID, role string, err error) {
+	token, parseErr := jwt.ParseWithClaims(tokenStr, &jwtClaims{}, func(t *jwt.Token) (any, error) {
 		// Explicitly verify the signing method — rejecting tokens signed
 		// with a different algorithm prevents algorithm-confusion attacks
 		// where an attacker swaps HS256 for "none" or RS256.
@@ -271,16 +276,16 @@ func (s *SchoolService) ValidateToken(tokenStr string) (string, error) {
 		}
 		return s.jwtSecret, nil
 	})
-	if err != nil {
-		return "", fmt.Errorf("invalid token: %w", err)
+	if parseErr != nil {
+		return "", "", "", fmt.Errorf("invalid token: %w", parseErr)
 	}
 
 	claims, ok := token.Claims.(*jwtClaims)
 	if !ok || !token.Valid {
-		return "", fmt.Errorf("invalid token claims")
+		return "", "", "", fmt.Errorf("invalid token claims")
 	}
 
-	return claims.SchoolID, nil
+	return claims.SchoolID, claims.SubjectID, claims.Role, nil
 }
 
 // =============================================================

@@ -11,8 +11,8 @@ import "time"
 // =============================================================
 
 // School represents a registered school account.
-// Each school is an independent tenant — all categories and books
-// are scoped to a school's ID.
+// The admin logs in with email + password and manages grades,
+// categories, and books for their school.
 type School struct {
 	ID           string     `db:"id"`
 	Name         string     `db:"name"`
@@ -31,13 +31,38 @@ type School struct {
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
-// Category represents a subject grouping defined by a school.
-// e.g. "Mathematics", "Science", "English".
-// Each school manages their own set of categories independently.
+// Grade represents a shared login account for an entire class.
+// e.g. "Grade 3" has one username/password used by all students
+// in that class simultaneously in the computer lab.
+// Categories and books are scoped to a grade so students only
+// see content appropriate for their level.
+type Grade struct {
+	ID           string     `db:"id"`
+	SchoolID     string     `db:"school_id"`
+	Name         string     `db:"name"`     // display name, e.g. "Grade 3"
+	Username     string     `db:"username"` // login handle, e.g. "grade3"
+	PasswordHash string     `db:"password_hash"`
+	IsActive     bool       `db:"is_active"`
+
+	// Brute force protection — shared counters mean all simultaneous
+	// logins from the same grade share the same lockout state.
+	LoginAttempts int        `db:"login_attempts"`
+	LockedUntil  *time.Time `db:"locked_until"`
+	LastLoginAt  *time.Time `db:"last_login_at"`
+
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// Category represents a subject grouping within a grade.
+// e.g. Grade 3 has "Mathematics", "Science", "English".
+// Scoped to a grade — Grade 3 and Grade 4 have independent category lists.
 type Category struct {
-	ID        string    `db:"id"`
-	SchoolID  string    `db:"school_id"`
-	Name      string    `db:"name"`
+	ID       string `db:"id"`
+	SchoolID string `db:"school_id"`
+	GradeID  string `db:"grade_id"`
+	Name     string `db:"name"`
+
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -46,12 +71,13 @@ type Category struct {
 // A book is uploaded as a PDF, processed into audio in the background,
 // and then served to students by unit number within its category.
 type Book struct {
-	ID         string     `db:"id"`
-	SchoolID   string     `db:"school_id"`
-	CategoryID string     `db:"category_id"`
-	Title      string     `db:"title"`
-	Author     string     `db:"author"`
-	UnitNumber int        `db:"unit_number"`
+	ID         string `db:"id"`
+	SchoolID   string `db:"school_id"`
+	GradeID    string `db:"grade_id"`
+	CategoryID string `db:"category_id"`
+	Title      string `db:"title"`
+	Author     string `db:"author"`
+	UnitNumber int    `db:"unit_number"`
 
 	// Storage keys — relative paths used by the storage layer.
 	// PDFPath is set immediately on upload.
@@ -80,8 +106,8 @@ type Book struct {
 // without requiring schema changes.
 type AuditEntry struct {
 	SchoolID *string           `db:"school_id"` // nil for system-level events
-	Action   string            `db:"action"`    // e.g. "book.created", "school.login.failed"
-	Entity   string            `db:"entity"`    // e.g. "book", "category", "school"
+	Action   string            `db:"action"`    // e.g. "book.created", "grade.login.failed"
+	Entity   string            `db:"entity"`    // e.g. "book", "category", "grade"
 	EntityID *string           `db:"entity_id"` // nil for events not tied to a specific row
 	Metadata map[string]string // serialised to JSONB before insert
 }
@@ -97,6 +123,18 @@ const (
 	BookStatusProcessing = "processing"
 	BookStatusReady      = "ready"
 	BookStatusFailed     = "failed"
+)
+
+// =============================================================
+// ROLE CONSTANTS
+// Embedded in the JWT so middleware can distinguish admin
+// (school account) from grade (shared student account) without
+// a DB lookup on every request.
+// =============================================================
+
+const (
+	RoleAdmin = "admin"
+	RoleGrade = "grade"
 )
 
 // =============================================================
@@ -120,15 +158,36 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// CreateGradeRequest is the body expected by POST /grades.
+// Only a logged-in admin can create grade accounts.
+type CreateGradeRequest struct {
+	Name     string `json:"name"     binding:"required,min=1,max=50"`
+	Username string `json:"username" binding:"required,min=2,max=50"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+
+// GradeLoginRequest is the body expected by POST /auth/grade/login.
+// Grades identify by school_id + username. school_id is required
+// because usernames are only unique within a school — two schools
+// can both have a grade with username "grade3".
+type GradeLoginRequest struct {
+	SchoolID string `json:"school_id" binding:"required,uuid"`
+	Username string `json:"username"  binding:"required"`
+	Password string `json:"password"  binding:"required"`
+}
+
 // CreateCategoryRequest is the body expected by POST /categories.
+// GradeID tells the API which grade this category belongs to.
 type CreateCategoryRequest struct {
-	Name string `json:"name" binding:"required,min=1,max=50"`
+	GradeID string `json:"grade_id" binding:"required,uuid"`
+	Name    string `json:"name"     binding:"required,min=1,max=50"`
 }
 
 // CreateBookRequest is the body expected by POST /books.
 // The PDF file itself is received as a multipart form field, not JSON —
 // these fields come from the other form fields in the same request.
 type CreateBookRequest struct {
+	GradeID    string `form:"grade_id"    binding:"required,uuid"`
 	CategoryID string `form:"category_id" binding:"required,uuid"`
 	Title      string `form:"title"       binding:"required,min=1,max=200"`
 	Author     string `form:"author"      binding:"max=100"`
@@ -151,15 +210,33 @@ type SchoolResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// LoginResponse is returned after a successful login.
+// LoginResponse is returned after a successful admin login.
 type LoginResponse struct {
 	Token  string         `json:"token"`
 	School SchoolResponse `json:"school"`
 }
 
+// GradeResponse is returned for grade list and detail endpoints.
+// password_hash is never included.
+type GradeResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Username  string    `json:"username"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GradeLoginResponse is returned after a successful grade login.
+type GradeLoginResponse struct {
+	Token    string        `json:"token"`
+	Grade    GradeResponse `json:"grade"`
+	SchoolID string        `json:"school_id"`
+}
+
 // CategoryResponse is returned for category list and detail endpoints.
 type CategoryResponse struct {
 	ID        string    `json:"id"`
+	GradeID   string    `json:"grade_id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -169,6 +246,7 @@ type CategoryResponse struct {
 // resolves the storage key to a full URL before building this struct.
 type BookResponse struct {
 	ID         string    `json:"id"`
+	GradeID    string    `json:"grade_id"`
 	CategoryID string    `json:"category_id"`
 	Title      string    `json:"title"`
 	Author     string    `json:"author"`
