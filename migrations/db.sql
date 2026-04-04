@@ -90,6 +90,7 @@ CREATE TABLE categories (
 -- Enum enforces valid status values at the DB level.
 -- A typo in application code is rejected immediately.
 CREATE TYPE book_status AS ENUM ('processing', 'ready', 'failed');
+ALTER TYPE book_status ADD VALUE 'pending';
 
 -- Each book belongs to a grade and a category within that grade.
 -- The composite FK (grade_id, category_id) makes it structurally
