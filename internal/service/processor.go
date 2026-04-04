@@ -302,34 +302,52 @@ func extractText(pdfData []byte) (string, error) {
 // split the text into chunks, synthesise each chunk, and concatenate the resulting audio.
 // This ensures the full book content is always converted.
 func (p *Processor) synthesise(ctx context.Context, text string) ([]byte, error) {
-	const maxChunkSize = 2900 // stay safely under Polly's 3000 char limit
+    const maxChunkSize = 2900
 
-	chunks := splitIntoChunks(text, maxChunkSize)
-	log.Printf("processor: synthesising %d chunk(s) via polly", len(chunks))
+    chunks := splitIntoChunks(text, maxChunkSize)
+    log.Printf("processor: synthesising %d chunk(s) via polly", len(chunks))
 
-	var fullAudio []byte
+    var fullAudio []byte
 
-	for i, chunk := range chunks {
-		result, err := p.pollyClient.SynthesizeSpeech(ctx, &polly.SynthesizeSpeechInput{
-			OutputFormat: types.OutputFormatMp3,
-			Text:         aws.String(chunk),
-			VoiceId:      types.VoiceIdJoanna,
-			Engine:       types.EngineNeural,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("polly chunk %d of %d: %w", i+1, len(chunks), err)
-		}
+    for i, chunk := range chunks {
+        // Wrap text in SSML to control speaking rate.
+        // 85% is noticeably slower and clearer for young listeners.
+        // Increase toward 100% if it feels too slow during testing.
+        ssml := fmt.Sprintf(
+            `<speak><prosody rate="85%%">%s</prosody></speak>`,
+            escapeSSML(chunk),
+        )
 
-		chunkAudio, err := io.ReadAll(result.AudioStream)
-		result.AudioStream.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read polly stream chunk %d: %w", i+1, err)
-		}
+        result, err := p.pollyClient.SynthesizeSpeech(ctx, &polly.SynthesizeSpeechInput{
+            OutputFormat: types.OutputFormatMp3,
+            Text:         aws.String(ssml),
+            TextType:     types.TextTypeSsml,   // tell Polly this is SSML not plain text
+            VoiceId:      types.VoiceIdAyanda,
+            Engine:       types.EngineNeural,
+        })
+        if err != nil {
+            return nil, fmt.Errorf("polly chunk %d of %d: %w", i+1, len(chunks), err)
+        }
 
-		fullAudio = append(fullAudio, chunkAudio...)
-	}
+        chunkAudio, err := io.ReadAll(result.AudioStream)
+        result.AudioStream.Close()
+        if err != nil {
+            return nil, fmt.Errorf("read polly stream chunk %d: %w", i+1, err)
+        }
 
-	return fullAudio, nil
+        fullAudio = append(fullAudio, chunkAudio...)
+    }
+
+    return fullAudio, nil
+}
+
+// escapeSSML replaces characters that would break SSML XML parsing.
+// Polly rejects chunks containing raw & < > characters inside <speak> tags.
+func escapeSSML(s string) string {
+    s = strings.ReplaceAll(s, "&", "&amp;")
+    s = strings.ReplaceAll(s, "<", "&lt;")
+    s = strings.ReplaceAll(s, ">", "&gt;")
+    return s
 }
 
 // splitIntoChunks breaks text into slices of at most maxSize characters.
