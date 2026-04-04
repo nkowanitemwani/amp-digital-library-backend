@@ -134,42 +134,38 @@ func main() {
 		auth.POST("/grade/login", gradeHandler.Login)
 	}
 
-	// ── Admin routes — JWT required, role must be "admin" ────
-	// RequireAuth validates the token.
-	// RequireAdmin enforces the role — students cannot hit these.
-	admin := router.Group("/")
+	// ── Admin routes — prefix /admin, role must be "admin" ───
+	// All paths begin with /admin/ so they are structurally
+	// separate from student routes
+	admin := router.Group("/admin")
 	admin.Use(middleware.RequireAuth(schoolService), middleware.RequireAdmin)
 	{
 		// School profile
-		admin.GET("/auth/me", schoolHandler.Me)
+		admin.GET("/me", schoolHandler.Me)
 
-		// Grade management — admin creates/lists/deletes grades
+		// Grade management
 		admin.POST("/grades",       gradeHandler.Create)
 		admin.GET("/grades",        gradeHandler.GetAll)
 		admin.DELETE("/grades/:id", gradeHandler.Delete)
 
-		// Category management — admin creates/deletes categories for grades
-		admin.POST("/categories",       categoryHandler.Create)
-		admin.GET("/grades/:id/categoriesadmin", categoryHandler.GetAll)//change on frontend too
-		admin.DELETE("/categories/:id", categoryHandler.Delete)
+		// Category management — grade_id comes from request body / query param
+		admin.POST("/categories",               categoryHandler.Create)
+		admin.GET("/grades/:id/categories",     categoryHandler.GetAll)
+		admin.DELETE("/categories/:id",         categoryHandler.Delete)
 
-		// Book management — admin uploads/deletes books
+		// Book management — grade_id comes from form fields / query param
 		admin.POST("/books",               bookHandler.Upload)
-		admin.GET("/booksadmin/:id",            bookHandler.GetByID)//change on frontend too
+		admin.GET("/books/:id",            bookHandler.GetByID)
 		admin.DELETE("/books/:id",         bookHandler.Delete)
-		admin.GET("/categories/:id/booksadmin", bookHandler.GetByCategory)//change on frontend too
+		admin.GET("/categories/:id/books", bookHandler.GetByCategory)
 	}
 
-	// ── Grade routes — JWT required, role must be "grade" ────
-	// These are the student-facing read-only endpoints.
-	// A grade token can only read content belonging to that grade.
-	grade := router.Group("/")
-	grade.Use(middleware.RequireAuth(schoolService), middleware.RequireGrade)
+	student := router.Group("/student")
+	student.Use(middleware.RequireAuth(schoolService), middleware.RequireGrade)
 	{
-		// Students browse categories and books — read only, no uploads.
-		grade.GET("/grades/:id/categoriesstudent", categoryHandler.GetAll)//change on frontend too
-		grade.GET("/categories/:id/booksstudent",  bookHandler.GetByCategory)//change on frontend too
-		grade.GET("/booksstudent/:id",             bookHandler.GetByID)//change on frontend too
+		student.GET("/grades/:id/categories", categoryHandler.GetAll)
+		student.GET("/categories/:id/books",  bookHandler.GetByCategory)
+		student.GET("/books/:id",             bookHandler.GetByID)
 	}
 
 	// ==========================================================
