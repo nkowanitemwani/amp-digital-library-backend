@@ -212,10 +212,12 @@ func (s *BookService) Delete(ctx context.Context, schoolID, gradeID, bookID stri
 	return nil
 }
 
-// =============================================================
-// RESPONSE BUILDER
-// =============================================================
-
+// toBookResponse converts a Book to a BookResponse.
+// AudioURL is resolved via SignedURL so the client receives a
+// time-limited URL they can stream directly — works for both
+// local disk (plain URL) and S3 (presigned URL).
+// A background context is used here since this is a read-only
+// operation and we do not want a request timeout to break URL generation.
 func toBookResponse(b *models.Book, store storage.Storage) *models.BookResponse {
 	resp := &models.BookResponse{
 		ID:         b.ID,
@@ -229,8 +231,13 @@ func toBookResponse(b *models.Book, store storage.Storage) *models.BookResponse 
 	}
 
 	// Only resolve the audio URL when the book is fully processed.
+	// Presigning on every list call is acceptable — the S3 SDK generates
+	// presigned URLs locally without any network request.
 	if b.Status == models.BookStatusReady && b.AudioPath != nil {
-		resp.AudioURL = store.URL(*b.AudioPath)
+		url, err := store.SignedURL(context.Background(), *b.AudioPath, storage.AudioSignedURLTTL)
+		if err == nil {
+			resp.AudioURL = url
+		}
 	}
 
 	return resp

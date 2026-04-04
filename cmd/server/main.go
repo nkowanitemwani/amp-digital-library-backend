@@ -150,14 +150,14 @@ func main() {
 
 		// Category management — admin creates/deletes categories for grades
 		admin.POST("/categories",       categoryHandler.Create)
-		admin.GET("/grades/:id/categories", categoryHandler.GetAll)
+		admin.GET("/grades/:id/categoriesadmin", categoryHandler.GetAll)//change on frontend too
 		admin.DELETE("/categories/:id", categoryHandler.Delete)
 
 		// Book management — admin uploads/deletes books
 		admin.POST("/books",               bookHandler.Upload)
-		admin.GET("/books/:id",            bookHandler.GetByID)
+		admin.GET("/booksadmin/:id",            bookHandler.GetByID)//change on frontend too
 		admin.DELETE("/books/:id",         bookHandler.Delete)
-		admin.GET("/categories/:id/books", bookHandler.GetByCategory)
+		admin.GET("/categories/:id/booksadmin", bookHandler.GetByCategory)//change on frontend too
 	}
 
 	// ── Grade routes — JWT required, role must be "grade" ────
@@ -167,9 +167,9 @@ func main() {
 	grade.Use(middleware.RequireAuth(schoolService), middleware.RequireGrade)
 	{
 		// Students browse categories and books — read only, no uploads.
-		grade.GET("/grades/:id/categories", categoryHandler.GetAll)
-		grade.GET("/categories/:id/books",  bookHandler.GetByCategory)
-		grade.GET("/books/:id",             bookHandler.GetByID)
+		grade.GET("/grades/:id/categoriesstudent", categoryHandler.GetAll)//change on frontend too
+		grade.GET("/categories/:id/booksstudent",  bookHandler.GetByCategory)//change on frontend too
+		grade.GET("/booksstudent/:id",             bookHandler.GetByID)//change on frontend too
 	}
 
 	// ==========================================================

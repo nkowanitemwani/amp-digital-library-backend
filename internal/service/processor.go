@@ -298,9 +298,8 @@ func extractText(pdfData []byte) (string, error) {
 }
 
 // synthesise converts text to MP3 audio using AWS Polly.
-// Polly has a hard limit of 3000 characters per request. Rather than
-// truncating silently (as the prototype did), we split the text into
-// chunks, synthesise each chunk, and concatenate the resulting audio.
+// Polly has a hard limit of 3000 characters per request. 
+// split the text into chunks, synthesise each chunk, and concatenate the resulting audio.
 // This ensures the full book content is always converted.
 func (p *Processor) synthesise(ctx context.Context, text string) ([]byte, error) {
 	const maxChunkSize = 2900 // stay safely under Polly's 3000 char limit
