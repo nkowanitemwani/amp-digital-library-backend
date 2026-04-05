@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	// "database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -246,10 +245,8 @@ func (p *Processor) fetchPDF(ctx context.Context, book *models.Book) ([]byte, er
 		return nil, fmt.Errorf("book has no pdf_path")
 	}
 
-	// LocalStorage.Save writes to disk; we read it back the same way.
-	// S3Storage would call GetObject here — but because Storage only
-	// exposes Save and URL, we read directly via the local path.
-	// For S3, this would be extended with a Get method on the interface.
+	// Reads PDF bytes back from whichever storage backend is active.
+	// LocalStorage reads from disk, S3Storage calls GetObject.
 	data, err := readFromStore(ctx, p.store, *book.PDFPath)
 	if err != nil {
 		return nil, fmt.Errorf("read pdf from storage: %w", err)
@@ -311,10 +308,8 @@ func (p *Processor) synthesise(ctx context.Context, text string) ([]byte, error)
 
     for i, chunk := range chunks {
         // Wrap text in SSML to control speaking rate.
-        // 85% is noticeably slower and clearer for young listeners.
-        // Increase toward 100% if it feels too slow during testing.
         ssml := fmt.Sprintf(
-            `<speak><prosody rate="85%%">%s</prosody></speak>`,
+            `<speak><prosody rate="100%%">%s</prosody></speak>`,
             escapeSSML(chunk),
         )
 
@@ -420,13 +415,13 @@ func (p *Processor) markFailed(ctx context.Context, book *models.Book, reason st
 // readFromStore reads a file from local disk storage by its key.
 // This is only used by the processor — nothing else needs to read
 // raw file bytes back out of storage.
-func readFromStore(_ context.Context, store storage.Storage, key string) ([]byte, error) {
-	local, ok := store.(*storage.LocalStorage)
-	if !ok {
-		// S3 implementation: would call s3.GetObject here.
-		// For now, only local disk is supported for reads.
-		return nil, fmt.Errorf("read from store: only LocalStorage supports direct reads; add Get() to Storage interface for S3")
+func readFromStore(ctx context.Context, store storage.Storage, key string) ([]byte, error) {
+	switch s := store.(type) {
+	case *storage.LocalStorage:
+		return s.ReadFile(key)
+	case *storage.S3Storage:
+		return s.GetObject(ctx, key)
+	default:
+		return nil, fmt.Errorf("readFromStore: unsupported storage type %T", store)
 	}
-
-	return local.ReadFile(key)
 }
