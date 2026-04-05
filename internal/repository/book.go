@@ -21,13 +21,15 @@ func NewBookRepository(db *sql.DB) *BookRepository {
 	return &BookRepository{db: db}
 }
 
-// Create inserts a new book row with status = 'processing' and returns it.
-// pdf_path is set here. audio_path is populated later by UpdateAudioReady
-// once background processing completes.
+// Create inserts a new book row with status = 'pending'.
+// The book stays pending until the PDF is successfully saved to storage
+// and UpdatePDFPath is called, which flips it to 'processing'.
+// The processor only claims 'processing' rows — this prevents it from
+// attempting to fetch a PDF that hasn't been uploaded yet.
 func (r *BookRepository) Create(ctx context.Context, book *models.Book) (*models.Book, error) {
 	query := `
 		INSERT INTO books (school_id, grade_id, category_id, title, author, unit_number, pdf_path, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing')
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
 		RETURNING id, school_id, grade_id, category_id, title, author, unit_number,
 		          pdf_path, audio_path, status, version, created_at, updated_at`
 
@@ -174,10 +176,17 @@ func (r *BookRepository) ClaimNextPending(ctx context.Context) (*models.Book, *s
 	return book, tx, nil
 }
 
-// UpdatePDFPath sets the pdf_path after the file has been saved to storage.
+// UpdatePDFPath sets the pdf_path and flips status from 'pending' to
+// 'processing' in a single atomic UPDATE. This is the moment the processor
+// becomes eligible to claim the book — it will never see a book without
+// a pdf_path because pending books are invisible to ClaimNextPending.
 func (r *BookRepository) UpdatePDFPath(ctx context.Context, id, pdfPath string, version int) error {
 	result, err := r.db.ExecContext(ctx,
-		`UPDATE books SET pdf_path = $1, version = version + 1 WHERE id = $2 AND version = $3`,
+		`UPDATE books
+		 SET pdf_path = $1,
+		     status   = 'processing',
+		     version  = version + 1
+		 WHERE id = $2 AND version = $3`,
 		pdfPath, id, version,
 	)
 	if err != nil {

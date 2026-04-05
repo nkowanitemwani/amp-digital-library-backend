@@ -106,12 +106,13 @@ func (s *BookService) Upload(ctx context.Context, schoolID, gradeID string, req 
 	pdfKey := storage.PDFKey(book.ID)
 	if err := s.store.Save(ctx, pdfKey, pdfData, "application/pdf"); err != nil {
 		// PDF save failed — mark the book as failed so it does not sit
-		// in 'processing' forever, then surface the error.
+		// in 'pending' forever, then surface the error to the admin.
 		s.bookRepo.UpdateStatusFailed(ctx, book.ID)
 		return nil, fmt.Errorf("save pdf: %w", err)
 	}
 
-	// Record the PDF path on the book row now that the file exists.
+	// PDF saved — set pdf_path and atomically flip status to 'processing'.
+	// The processor will now pick this book up on its next poll cycle.
 	if err := s.bookRepo.UpdatePDFPath(ctx, book.ID, pdfKey, book.Version); err != nil {
 		return nil, fmt.Errorf("update pdf path: %w", err)
 	}
@@ -231,8 +232,7 @@ func toBookResponse(b *models.Book, store storage.Storage) *models.BookResponse 
 	}
 
 	// Only resolve the audio URL when the book is fully processed.
-	// Presigning on every list call is acceptable — the S3 SDK generates
-	// presigned URLs locally without any network request.
+	// Pending and processing books have no audio yet.
 	if b.Status == models.BookStatusReady && b.AudioPath != nil {
 		url, err := store.SignedURL(context.Background(), *b.AudioPath, storage.AudioSignedURLTTL)
 		if err == nil {

@@ -120,6 +120,7 @@ type AuditEntry struct {
 // =============================================================
 
 const (
+	BookStatusPending    = "pending"    
 	BookStatusProcessing = "processing"
 	BookStatusReady      = "ready"
 	BookStatusFailed     = "failed"
