@@ -3,17 +3,14 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/polly"
-	"github.com/aws/aws-sdk-go-v2/service/polly/types"
 	"github.com/ledongthuc/pdf"
 	"github.com/nkowanitemwani/amp-digital-library-backend/internal/models"
 	"github.com/nkowanitemwani/amp-digital-library-backend/internal/repository"
@@ -37,7 +34,8 @@ type Processor struct {
 	bookRepo    *repository.BookRepository
 	auditRepo   *repository.AuditRepository
 	store       storage.Storage
-	pollyClient *polly.Client
+	elevenLabsKey     string
+    elevenLabsVoiceID string
 
 	// workerCount controls how many goroutines run concurrently.
 	// Each worker holds one DB connection for the duration of a claim,
@@ -53,30 +51,21 @@ type Processor struct {
 // so the Polly dependency is explicit — main.go passes in config values
 // rather than the processor reading environment variables itself.
 func NewProcessor(
-	bookRepo *repository.BookRepository,
-	auditRepo *repository.AuditRepository,
-	store storage.Storage,
-	region, accessKeyID, secretAccessKey string,
-	workerCount, pollSecs int,
+    bookRepo *repository.BookRepository,
+    auditRepo *repository.AuditRepository,
+    store storage.Storage,
+    elevenLabsKey, elevenLabsVoiceID string,
+    workerCount, pollSecs int,
 ) (*Processor, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(region),
-		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, ""),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load aws config for polly: %w", err)
-	}
-
-	return &Processor{
-		bookRepo:     bookRepo,
-		auditRepo:    auditRepo,
-		store:        store,
-		pollyClient:  polly.NewFromConfig(cfg),
-		workerCount:  workerCount,
-		pollInterval: time.Duration(pollSecs) * time.Second,
-	}, nil
+    return &Processor{
+        bookRepo:          bookRepo,
+        auditRepo:         auditRepo,
+        store:             store,
+        elevenLabsKey:     elevenLabsKey,
+        elevenLabsVoiceID: elevenLabsVoiceID,
+        workerCount:       workerCount,
+        pollInterval:      time.Duration(pollSecs) * time.Second,
+    }, nil
 }
 
 // Start launches workerCount goroutines and returns immediately.
@@ -294,56 +283,71 @@ func extractText(pdfData []byte) (string, error) {
 	return extracted, nil
 }
 
-// synthesise converts text to MP3 audio using AWS Polly.
-// Polly has a hard limit of 3000 characters per request. 
-// split the text into chunks, synthesise each chunk, and concatenate the resulting audio.
-// This ensures the full book content is always converted.
+// synthesise converts text to MP3 audio using ElevenLabs.
+// Text is split into chunks to stay within API limits.
+// Each chunk is synthesised independently and the MP3 bytes
+// are concatenated — ElevenLabs produces clean joins unlike Polly.
 func (p *Processor) synthesise(ctx context.Context, text string) ([]byte, error) {
-    const maxChunkSize = 2900
+    const maxChunkSize = 2500 // ElevenLabs handles up to 5000 but smaller = faster response
 
     chunks := splitIntoChunks(text, maxChunkSize)
-    log.Printf("processor: synthesising %d chunk(s) via polly", len(chunks))
+    log.Printf("processor: synthesising %d chunk(s) via elevenlabs", len(chunks))
 
     var fullAudio []byte
 
     for i, chunk := range chunks {
-        // Wrap text in SSML to control speaking rate.
-        ssml := fmt.Sprintf(
-            `<speak><prosody rate="100%%">%s</prosody></speak>`,
-            escapeSSML(chunk),
-        )
-
-        result, err := p.pollyClient.SynthesizeSpeech(ctx, &polly.SynthesizeSpeechInput{
-            OutputFormat: types.OutputFormatMp3,
-            Text:         aws.String(ssml),
-            TextType:     types.TextTypeSsml,   // tell Polly this is SSML not plain text
-            VoiceId:      types.VoiceIdAyanda,
-            Engine:       types.EngineNeural,
-        })
+        audio, err := p.elevenLabsTTS(ctx, chunk)
         if err != nil {
-            return nil, fmt.Errorf("polly chunk %d of %d: %w", i+1, len(chunks), err)
+            return nil, fmt.Errorf("elevenlabs chunk %d of %d: %w", i+1, len(chunks), err)
         }
-
-        chunkAudio, err := io.ReadAll(result.AudioStream)
-        result.AudioStream.Close()
-        if err != nil {
-            return nil, fmt.Errorf("read polly stream chunk %d: %w", i+1, err)
-        }
-
-        fullAudio = append(fullAudio, chunkAudio...)
+        fullAudio = append(fullAudio, audio...)
     }
 
     return fullAudio, nil
 }
 
-// escapeSSML replaces characters that would break SSML XML parsing.
-// Polly rejects chunks containing raw & < > characters inside <speak> tags.
-func escapeSSML(s string) string {
-    s = strings.ReplaceAll(s, "&", "&amp;")
-    s = strings.ReplaceAll(s, "<", "&lt;")
-    s = strings.ReplaceAll(s, ">", "&gt;")
-    return s
+// elevenLabsTTS calls the ElevenLabs API to convert a single text chunk
+// to MP3 audio. Returns raw MP3 bytes ready to concatenate or upload.
+func (p *Processor) elevenLabsTTS(ctx context.Context, text string) ([]byte, error) {
+    body, err := json.Marshal(map[string]any{
+        "text":     text,
+        "model_id": "eleven_turbo_v2_5", // latest turbo — fast, cheap, high quality
+        "voice_settings": map[string]any{
+            "stability":        0.5,  // 0=very expressive, 1=very consistent
+            "similarity_boost": 0.75, // how closely to match the original voice
+            "style":            0.0,  // keep at 0 for clearest educational reading
+            "use_speaker_boost": true,
+        },
+    })
+    if err != nil {
+        return nil, fmt.Errorf("marshal request: %w", err)
+    }
+
+    url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", p.elevenLabsVoiceID)
+    req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+    if err != nil {
+        return nil, fmt.Errorf("create request: %w", err)
+    }
+
+    req.Header.Set("xi-api-key",   p.elevenLabsKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept",       "audio/mpeg")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("elevenlabs http: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        errBody, _ := io.ReadAll(resp.Body)
+        return nil, fmt.Errorf("elevenlabs %d: %s", resp.StatusCode, string(errBody))
+    }
+
+    return io.ReadAll(resp.Body)
 }
+
+
 
 // splitIntoChunks breaks text into slices of at most maxSize characters.
 // It splits on word boundaries where possible to avoid cutting words in

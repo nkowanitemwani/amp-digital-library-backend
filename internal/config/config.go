@@ -20,6 +20,8 @@ type Config struct {
 	DBUser             string
 	DBPassword         string
 	DBName             string
+	ElevenLabsKey      string
+	ElevenLabsVoiceID  string
 
 	// Integer fields — os.Getenv returns strings so we parse these
 	// explicitly. Load() returns an error if they are missing or not
@@ -66,6 +68,8 @@ func Load() (*Config, error) {
 		DBName:             requireEnv("DB_NAME"),
 		ProcessorWorkers:   workers,
 		ProcessorPollSecs:  pollSecs,
+		ElevenLabsKey:      requireEnv("ELEVENLABS_API_KEY"),
+		ElevenLabsVoiceID:  requireEnv("ELEVENLABS_VOICE_ID"),
 	}
 
 	// Validate required string fields that requireEnv() returns empty
@@ -80,6 +84,8 @@ func Load() (*Config, error) {
 		"DB_USER":               cfg.DBUser,
 		"DB_PASSWORD":           cfg.DBPassword,
 		"DB_NAME":               cfg.DBName,
+		"ELEVENLABS_API_KEY":    cfg.ElevenLabsKey,
+		"ELEVENLABS_VOICE_ID":   cfg.ElevenLabsVoiceID,
 	}
 
 	for key, val := range required {
