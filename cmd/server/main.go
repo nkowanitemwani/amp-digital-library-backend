@@ -95,9 +95,8 @@ func main() {
 		bookRepo,
 		auditRepo,
 		store,
-		cfg.AWSRegion,
-		cfg.AWSAccessKeyId,
-		cfg.AWSSecretAccessKey,
+		cfg.ElevenLabsKey,
+		cfg.ElevenLabsVoiceID,
 		cfg.ProcessorWorkers,
 		cfg.ProcessorPollSecs,
 	)
