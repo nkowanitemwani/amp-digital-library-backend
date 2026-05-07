@@ -60,7 +60,8 @@ func (r *BookRepository) Create(ctx context.Context, book *models.Book) (*models
 func (r *BookRepository) GetByID(ctx context.Context, id, gradeID string) (*models.Book, error) {
 	query := `
 		SELECT id, school_id, grade_id, category_id, title, author, unit_number,
-		       pdf_path, audio_path, status, version, created_at, updated_at
+		       pdf_path, audio_path, dialogue_audio_path,
+		       status, dialogue_status, version, created_at, updated_at
 		FROM books
 		WHERE id = $1 AND grade_id = $2`
 
@@ -68,7 +69,8 @@ func (r *BookRepository) GetByID(ctx context.Context, id, gradeID string) (*mode
 	err := r.db.QueryRowContext(ctx, query, id, gradeID).Scan(
 		&book.ID, &book.SchoolID, &book.GradeID, &book.CategoryID,
 		&book.Title, &book.Author, &book.UnitNumber,
-		&book.PDFPath, &book.AudioPath, &book.Status,
+		&book.PDFPath, &book.AudioPath, &book.DialogueAudioPath,
+		&book.Status, &book.DialogueStatus,
 		&book.Version, &book.CreatedAt, &book.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -87,7 +89,8 @@ func (r *BookRepository) GetByID(ctx context.Context, id, gradeID string) (*mode
 func (r *BookRepository) GetAllByCategory(ctx context.Context, categoryID, gradeID string) ([]*models.Book, error) {
 	query := `
 		SELECT id, school_id, grade_id, category_id, title, author, unit_number,
-		       pdf_path, audio_path, status, version, created_at, updated_at
+		       pdf_path, audio_path, dialogue_audio_path,
+		       status, dialogue_status, version, created_at, updated_at
 		FROM books
 		WHERE category_id = $1 AND grade_id = $2
 		ORDER BY unit_number ASC`
@@ -104,7 +107,8 @@ func (r *BookRepository) GetAllByCategory(ctx context.Context, categoryID, grade
 		if err := rows.Scan(
 			&book.ID, &book.SchoolID, &book.GradeID, &book.CategoryID,
 			&book.Title, &book.Author, &book.UnitNumber,
-			&book.PDFPath, &book.AudioPath, &book.Status,
+			&book.PDFPath, &book.AudioPath, &book.DialogueAudioPath,
+			&book.Status, &book.DialogueStatus,
 			&book.Version, &book.CreatedAt, &book.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan book: %w", err)
@@ -150,7 +154,8 @@ func (r *BookRepository) ClaimNextPending(ctx context.Context) (*models.Book, *s
 
 	query := `
 		SELECT id, school_id, grade_id, category_id, title, author, unit_number,
-		       pdf_path, audio_path, status, version, created_at, updated_at
+		       pdf_path, audio_path, dialogue_audio_path,
+		       status, dialogue_status, version, created_at, updated_at
 		FROM books
 		WHERE status = 'processing'
 		ORDER BY created_at ASC
@@ -161,7 +166,8 @@ func (r *BookRepository) ClaimNextPending(ctx context.Context) (*models.Book, *s
 	err = tx.QueryRowContext(ctx, query).Scan(
 		&book.ID, &book.SchoolID, &book.GradeID, &book.CategoryID,
 		&book.Title, &book.Author, &book.UnitNumber,
-		&book.PDFPath, &book.AudioPath, &book.Status,
+		&book.PDFPath, &book.AudioPath, &book.DialogueAudioPath,
+		&book.Status, &book.DialogueStatus,
 		&book.Version, &book.CreatedAt, &book.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -237,6 +243,23 @@ func (r *BookRepository) UpdateStatusFailed(ctx context.Context, id string) erro
 	if err != nil {
 		return fmt.Errorf("update status failed: %w", err)
 	}
+	return nil
+}
 
+// UpdateDialogueReady sets the dialogue_audio_path and marks
+// dialogue_status = 'ready' after two-voice synthesis completes.
+// Called outside the claim transaction because dialogue success/failure
+// does not affect the book's primary ready status.
+func (r *BookRepository) UpdateDialogueReady(ctx context.Context, id, dialoguePath string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE books
+		 SET dialogue_audio_path = $1,
+		     dialogue_status     = 'ready'
+		 WHERE id = $2`,
+		dialoguePath, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update dialogue ready: %w", err)
+	}
 	return nil
 }

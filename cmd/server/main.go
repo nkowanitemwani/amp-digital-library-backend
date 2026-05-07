@@ -46,20 +46,9 @@ func main() {
 	// Swap NewLocalStorage for NewS3Storage here when deploying.
 	// Everything above and below this line is unaffected.
 	// ==========================================================
-	// store, err := storage.NewLocalStorage(
-	// 	"./storage/files",
-	// 	"http://localhost:"+cfg.ServerPort+"/files",
-	// )
-	// if err != nil {
-	// 	log.Fatalf("failed to initialise storage: %v", err)
-	// }
-
-	store, err := storage.NewS3Storage(
-		context.Background(),
-		cfg.AWSRegion,
-		cfg.S3Bucket,
-		cfg.AWSAccessKeyId,
-		cfg.AWSSecretAccessKey,
+	store, err := storage.NewLocalStorage(
+		"./storage/files",
+		"http://localhost:"+cfg.ServerPort+"/files",
 	)
 	if err != nil {
 		log.Fatalf("failed to initialise storage: %v", err)
@@ -70,21 +59,24 @@ func main() {
 	// Each repo receives the shared DB pool.
 	// Repos are the only layer that holds a DB reference.
 	// ==========================================================
-	schoolRepo := repository.NewSchoolRepository(database)
-	gradeRepo := repository.NewGradeRepository(database)
+	schoolRepo   := repository.NewSchoolRepository(database)
+	gradeRepo    := repository.NewGradeRepository(database)
 	categoryRepo := repository.NewCategoryRepository(database)
-	bookRepo := repository.NewBookRepository(database)
-	auditRepo := repository.NewAuditRepository(database)
+	bookRepo     := repository.NewBookRepository(database)
+	auditRepo    := repository.NewAuditRepository(database)
+	questionRepo := repository.NewQuestionRepository(database)
+	attemptRepo  := repository.NewAttemptRepository(database)
 
 	// ==========================================================
 	// SERVICES
 	// Each service receives only the repos and dependencies it needs.
 	// Services never hold a DB reference directly.
 	// ==========================================================
-	schoolService := service.NewSchoolService(schoolRepo, auditRepo, cfg.JWTSecret)
-	gradeService := service.NewGradeService(gradeRepo, auditRepo, schoolService)
+	schoolService   := service.NewSchoolService(schoolRepo, auditRepo, cfg.JWTSecret)
+	gradeService    := service.NewGradeService(gradeRepo, auditRepo, schoolService)
 	categoryService := service.NewCategoryService(categoryRepo, gradeRepo, auditRepo)
-	bookService := service.NewBookService(bookRepo, categoryRepo, gradeRepo, auditRepo, store)
+	bookService     := service.NewBookService(bookRepo, categoryRepo, gradeRepo, auditRepo, store)
+	quizService     := service.NewQuizService(questionRepo, attemptRepo, bookRepo, gradeRepo, auditRepo, store)
 
 	// ==========================================================
 	// PROCESSOR
@@ -93,10 +85,13 @@ func main() {
 	// ==========================================================
 	processor, err := service.NewProcessor(
 		bookRepo,
+		questionRepo,
 		auditRepo,
 		store,
 		cfg.ElevenLabsKey,
-		cfg.ElevenLabsVoiceID,
+		cfg.ElevenLabsVoiceA,
+		cfg.ElevenLabsVoiceB,
+		cfg.GroqKey,
 		cfg.ProcessorWorkers,
 		cfg.ProcessorPollSecs,
 	)
@@ -112,10 +107,11 @@ func main() {
 	// Each handler receives only the service it needs.
 	// Handlers never hold repo or DB references.
 	// ==========================================================
-	schoolHandler := handler.NewSchoolHandler(schoolService)
-	gradeHandler := handler.NewGradeHandler(gradeService)
+	schoolHandler   := handler.NewSchoolHandler(schoolService)
+	gradeHandler    := handler.NewGradeHandler(gradeService)
 	categoryHandler := handler.NewCategoryHandler(categoryService)
-	bookHandler := handler.NewBookHandler(bookService)
+	bookHandler     := handler.NewBookHandler(bookService)
+	quizHandler     := handler.NewQuizHandler(quizService)
 
 	// ==========================================================
 	// ROUTER
@@ -134,19 +130,19 @@ func main() {
 
 	// Serve local storage files so audio URLs resolve in development.
 	// Remove this line when deploying with S3 — S3 URLs are self-contained.
-	// router.Static("/files", "./storage/files")
+	router.Static("/files", "./storage/files")
 
 	// ── Public routes — no JWT required ──────────────────────
 	auth := router.Group("/auth")
 	{
-		auth.POST("/register", schoolHandler.Register)
-		auth.POST("/login", schoolHandler.Login)
+		auth.POST("/register",    schoolHandler.Register)
+		auth.POST("/login",       schoolHandler.Login)
 		auth.POST("/grade/login", gradeHandler.Login)
 	}
 
 	// ── Admin routes — prefix /admin, role must be "admin" ───
 	// All paths begin with /admin/ so they are structurally
-	// separate from student routes
+	// separate from student routes — no suffix hacks needed.
 	admin := router.Group("/admin")
 	admin.Use(middleware.RequireAuth(schoolService), middleware.RequireAdmin)
 	{
@@ -154,28 +150,39 @@ func main() {
 		admin.GET("/me", schoolHandler.Me)
 
 		// Grade management
-		admin.POST("/grades", gradeHandler.Create)
-		admin.GET("/grades", gradeHandler.GetAll)
+		admin.POST("/grades",       gradeHandler.Create)
+		admin.GET("/grades",        gradeHandler.GetAll)
 		admin.DELETE("/grades/:id", gradeHandler.Delete)
 
 		// Category management — grade_id comes from request body / query param
-		admin.POST("/categories", categoryHandler.Create)
-		admin.GET("/grades/:id/categories", categoryHandler.GetAll)
-		admin.DELETE("/categories/:id", categoryHandler.Delete)
+		admin.POST("/categories",               categoryHandler.Create)
+		admin.GET("/grades/:id/categories",     categoryHandler.GetAll)
+		admin.DELETE("/categories/:id",         categoryHandler.Delete)
 
 		// Book management — grade_id comes from form fields / query param
-		admin.POST("/books", bookHandler.Upload)
-		admin.GET("/books/:id", bookHandler.GetByID)
-		admin.DELETE("/books/:id", bookHandler.Delete)
+		admin.POST("/books",               bookHandler.Upload)
+		admin.GET("/books/:id",            bookHandler.GetByID)
+		admin.DELETE("/books/:id",         bookHandler.Delete)
 		admin.GET("/categories/:id/books", bookHandler.GetByCategory)
+
+		// Grade progress — teacher sees quiz scores per grade
+		admin.GET("/grades/:id/progress", quizHandler.GetGradeProgress)
 	}
 
+	// ── Student routes — prefix /student, role must be "grade" ──
 	student := router.Group("/student")
 	student.Use(middleware.RequireAuth(schoolService), middleware.RequireGrade)
 	{
 		student.GET("/grades/:id/categories", categoryHandler.GetAll)
-		student.GET("/categories/:id/books", bookHandler.GetByCategory)
-		student.GET("/books/:id", bookHandler.GetByID)
+		student.GET("/categories/:id/books",  bookHandler.GetByCategory)
+		student.GET("/books/:id",             bookHandler.GetByID)
+
+		// Teaching dialogue — two-voice audio for a book
+		student.GET("/books/:id/dialogue",  quizHandler.GetDialogueURL)
+
+		// Quiz — questions and attempt submission
+		student.GET("/books/:id/questions", quizHandler.GetQuestions)
+		student.POST("/books/:id/attempts", quizHandler.SubmitAttempt)
 	}
 
 	// ==========================================================
