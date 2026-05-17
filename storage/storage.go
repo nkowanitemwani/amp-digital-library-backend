@@ -214,6 +214,16 @@ func AudioKey(bookID string) string {
 	return fmt.Sprintf("audio/%s.mp3", bookID)
 }
 
+// DialogueKey returns the storage key for a book's two-voice teaching dialogue.
+func DialogueKey(bookID string) string {
+	return fmt.Sprintf("dialogue/%s.mp3", bookID)
+}
+
+// QuestionAudioKey returns the storage key for a single question's audio.
+func QuestionAudioKey(questionID string) string {
+	return fmt.Sprintf("questions/%s.mp3", questionID)
+}
+
 // =============================================================
 // PDF VALIDATION
 // =============================================================

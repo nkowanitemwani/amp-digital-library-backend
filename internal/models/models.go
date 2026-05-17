@@ -81,23 +81,51 @@ type Book struct {
 
 	// Storage keys — relative paths used by the storage layer.
 	// PDFPath is set immediately on upload.
-	// AudioPath is set only after background processing completes.
-	PDFPath   *string `db:"pdf_path"`   // nil until upload succeeds
-	AudioPath *string `db:"audio_path"` // nil until processing completes
+	// AudioPath is set only after standard audio processing completes.
+	// DialogueAudioPath is set after two-voice dialogue synthesis completes.
+	PDFPath           *string `db:"pdf_path"`
+	AudioPath         *string `db:"audio_path"`
+	DialogueAudioPath *string `db:"dialogue_audio_path"`
 
-	// Status moves through: processing → ready | failed.
-	// Defined as an ENUM in the DB — any value outside these three
-	// is rejected at the database level.
-	Status string `db:"status"`
+	// Status tracks standard audio generation.
+	// DialogueStatus tracks the two-voice dialogue independently —
+	// both pipelines run in parallel so one can be ready before the other.
+	Status          string `db:"status"`
+	DialogueStatus  string `db:"dialogue_status"`
 
-	// Version is incremented on every update (optimistic locking).
-	// All updates must include WHERE version = $current and verify
-	// that exactly one row was affected, preventing silent overwrites
-	// when two processes update the same book concurrently.
+	// Optimistic locking — incremented on every update.
 	Version int `db:"version"`
 
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// Question represents a single AI-generated multiple choice question
+// for a book's quiz. The question and all four options are synthesised
+// to audio 
+type Question struct {
+	ID                string      `db:"id"`
+	BookID            string      `db:"book_id"`
+	GradeID           string      `db:"grade_id"`
+	QuestionText      string      `db:"question_text"`
+	Options           []string    // unmarshalled from JSONB
+	CorrectIndex      int         `db:"correct_index"`
+	QuestionAudioPath *string     `db:"question_audio_path"`
+	AudioStatus       string      `db:"audio_status"`
+	OrderIndex        int         `db:"order_index"`
+	CreatedAt         time.Time   `db:"created_at"`
+}
+
+// QuizAttempt records one completion of a book's quiz by a grade.
+// Multiple attempts are stored so teachers can track improvement.
+type QuizAttempt struct {
+	ID          string    `db:"id"`
+	BookID      string    `db:"book_id"`
+	GradeID     string    `db:"grade_id"`
+	Score       int       `db:"score"`
+	Total       int       `db:"total"`
+	Answers     []int     // unmarshalled from JSONB — selected option index per question
+	CompletedAt time.Time `db:"completed_at"`
 }
 
 // AuditEntry represents a single row written to the audit_log table.
@@ -120,8 +148,8 @@ type AuditEntry struct {
 // =============================================================
 
 const (
-	BookStatusPending    = "pending"    
-	BookStatusProcessing = "processing"
+	BookStatusPending    = "pending"    // inserted, PDF upload not yet complete
+	BookStatusProcessing = "processing" // PDF saved, queued for audio conversion
 	BookStatusReady      = "ready"
 	BookStatusFailed     = "failed"
 )
@@ -255,6 +283,54 @@ type BookResponse struct {
 	Status     string    `json:"status"`
 	AudioURL   string    `json:"audio_url,omitempty"` // omitted until ready
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SubmitAttemptRequest is the body expected by POST /student/books/:id/attempts.
+// Answers is an array of selected option indices, one per question.
+// e.g. [0, 2, 1, 3] — selected option 0 for Q1, option 2 for Q2, etc.
+type SubmitAttemptRequest struct {
+	Answers []int `json:"answers" binding:"required"`
+}
+
+// QuestionResponse is returned by GET /student/books/:id/questions.
+// CorrectIndex is excluded — students must not receive the answer
+// before submitting. It is only included in AttemptResponse after submission.
+type QuestionResponse struct {
+	ID               string   `json:"id"`
+	QuestionText     string   `json:"question_text"`
+	Options          []string `json:"options"`
+	OrderIndex       int      `json:"order_index"`
+	QuestionAudioURL string   `json:"question_audio_url,omitempty"`
+}
+
+// AttemptResponse is returned after a quiz is submitted.
+// Includes correct answers so the student (via their teacher) can
+// review which questions they got right.
+type AttemptResponse struct {
+	Score     int   `json:"score"`
+	Total     int   `json:"total"`
+	Answers   []int `json:"answers"`
+	Correct   []int `json:"correct"`   // correct_index per question, in order
+	Passed    bool  `json:"passed"`    // true if score >= 75%
+}
+
+// GradeProgressResponse is returned by GET /admin/grades/:id/progress.
+// Gives the teacher a summary of quiz activity across all books.
+type GradeProgressResponse struct {
+	GradeID   string         `json:"grade_id"`
+	GradeName string         `json:"grade_name"`
+	Books     []BookProgress `json:"books"`
+}
+
+// BookProgress is one book's quiz summary within a GradeProgressResponse.
+type BookProgress struct {
+	BookID      string  `json:"book_id"`
+	Title       string  `json:"title"`
+	UnitNumber  int     `json:"unit_number"`
+	Attempts    int     `json:"attempts"`
+	BestScore   int     `json:"best_score"`
+	TotalQ      int     `json:"total_questions"`
+	AvgScore    float64 `json:"avg_score"`
 }
 
 // =============================================================
