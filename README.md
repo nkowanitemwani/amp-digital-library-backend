@@ -117,7 +117,7 @@ The backend is a single Go process that runs both the HTTP server and background
 
 ```bash
 git https://github.com/nkowanitemwani/amp-digital-library-backend
-cd your-repo-name
+cd amp-digital-library-backend
 ```
 
 **2. Install dependencies**
