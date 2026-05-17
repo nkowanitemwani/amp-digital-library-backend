@@ -443,18 +443,31 @@ func (p *Processor) synthesiseDialogue(ctx context.Context, lines []DialogueLine
 // Runs in its own goroutine and is fully non-fatal — failures are logged
 // but never propagate to the book's primary processing status.
 func (p *Processor) generateAndSaveQuestions(ctx context.Context, book *models.Book, text string) {
-	system := `You generate multiple choice quiz questions for primary school students
-aged 6 to 13 in Zambia. Questions must test understanding of the key concepts.
+	system :=`You generate multiple choice quiz questions for primary school students
+aged 6 to 13 in Zambia. Questions must test understanding of key concepts.
 
-Requirements:
-- Generate exactly 4 questions.
-- Each question has exactly 4 answer options.
-- Use simple clear language appropriate for primary school.
-- correct_index is zero-based meaning 0 1 2 or 3.
-- Make sure only one option is clearly correct.
-- Questions should cover different parts of the content.
+STRICT RULES — follow every rule exactly:
+1. Generate exactly 4 questions.
+2. Each question has exactly 4 answer options.
+3. The correct answer must NEVER repeat or closely paraphrase the question itself.
+4. All 4 options must be clearly different from each other — no two options should
+   mean the same thing.
+5. Wrong options (distractors) must be plausible but clearly wrong to a student
+   who understood the lesson. Do not use obviously silly distractors.
+6. Questions must use simple vocabulary a Grade 1 to 7 Zambian student would
+   understand. Avoid technical jargon unless it was specifically taught.
+7. Each question must test a DIFFERENT concept from the content — do not ask
+   4 questions about the same idea.
+8. Question style guide:
+   - Ask "What does X mean?" NOT "What is X?" when X appears in the answer.
+   - Prefer questions like: "Which of these is an example of...?",
+     "Why do plants need...?", "What happens when...?", "How many...?"
+   - Avoid questions where the answer is a direct quote from the text.
+9. correct_index is zero-based (0, 1, 2, or 3).
+10. Vary which position the correct answer appears in — do not always put it
+    at position 0 or 3.
 
-Return ONLY valid JSON in this exact format with no extra text:
+Return ONLY valid JSON with no extra text:
 {"questions": [{"question": "...", "options": ["...", "...", "...", "..."], "correct_index": 0}]}`
 
 	raw, err := p.callGroq(ctx, system, text)
