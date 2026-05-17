@@ -15,6 +15,7 @@ type Config struct {
 	AWSSecretAccessKey string
 	S3Bucket           string
 	ServerPort         string
+	DatabaseURL        string
 	DBHost             string
 	DBPort             string
 	DBUser             string
@@ -63,6 +64,7 @@ func Load() (*Config, error) {
 		AWSSecretAccessKey: requireEnv("AWS_SECRET_ACCESS_KEY"),
 		S3Bucket:           requireEnv("S3_BUCKET"),
 		ServerPort:         getEnvWithDefault("SERVER_PORT", "8080"),
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		DBHost:             requireEnv("DB_HOST"),
 		DBPort:             getEnvWithDefault("DB_PORT", "5432"),
 		DBUser:             requireEnv("DB_USER"),
