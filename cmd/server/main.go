@@ -128,13 +128,21 @@ func main() {
 	// ==========================================================
 	router := gin.Default()
 
+
+	frontendURL := os.Getenv("FRONTEND_URL")
+
+	allowedOrigins := []string{"http://localhost:3000"}
+	if frontendURL != "" {
+		allowedOrigins = append(allowedOrigins, frontendURL)
+	}
+
 	// CORS — restrict AllowOrigins before deploying to production.
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: false,
+		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
 
