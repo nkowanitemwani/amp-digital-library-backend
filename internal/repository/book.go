@@ -83,30 +83,6 @@ func (r *BookRepository) GetByID(ctx context.Context, id, gradeID string) (*mode
 	return book, nil
 }
 
-func (r *BookRepository) GetByIDAdmin(ctx context.Context, id string) (*models.Book, error) {
-    query := `
-        SELECT id, school_id, grade_id, category_id, title, author, unit_number,
-               pdf_path, audio_path, dialogue_audio_path,
-               status, dialogue_status, version, created_at, updated_at
-        FROM books WHERE id = $1`
-
-    book := &models.Book{}
-    err := r.db.QueryRowContext(ctx, query, id).Scan(
-        &book.ID, &book.SchoolID, &book.GradeID, &book.CategoryID,
-        &book.Title, &book.Author, &book.UnitNumber,
-        &book.PDFPath, &book.AudioPath, &book.DialogueAudioPath,
-        &book.Status, &book.DialogueStatus,
-        &book.Version, &book.CreatedAt, &book.UpdatedAt,
-    )
-    if errors.Is(err, sql.ErrNoRows) {
-        return nil, ErrNotFound
-    }
-    if err != nil {
-        return nil, fmt.Errorf("get book by id admin: %w", err)
-    }
-    return book, nil
-}
-
 // GetAllByCategory returns all books in a category ordered by unit_number.
 // gradeID is included as a second ownership check alongside the composite
 // FK already enforced at the DB level.

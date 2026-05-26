@@ -41,11 +41,11 @@ type QuizService struct {
 // NewQuizService creates a QuizService with its dependencies.
 func NewQuizService(
 	questionRepo *repository.QuestionRepository,
-	attemptRepo *repository.AttemptRepository,
-	bookRepo *repository.BookRepository,
-	gradeRepo *repository.GradeRepository,
-	auditRepo *repository.AuditRepository,
-	store storage.Storage,
+	attemptRepo  *repository.AttemptRepository,
+	bookRepo     *repository.BookRepository,
+	gradeRepo    *repository.GradeRepository,
+	auditRepo    *repository.AuditRepository,
+	store        storage.Storage,
 ) *QuizService {
 	return &QuizService{
 		questionRepo: questionRepo,
@@ -57,13 +57,6 @@ func NewQuizService(
 	}
 }
 
-func (s *QuizService) getBook(ctx context.Context, gradeID, bookID string) (*models.Book, error) {
-	if gradeID == "" {
-		return s.bookRepo.GetByIDAdmin(ctx, bookID)
-	}
-	return s.bookRepo.GetByID(ctx, bookID, gradeID)
-}
-
 // GetQuestions returns all questions for a book's quiz.
 // The correct answer index is stripped from the response — students
 // must not receive answers before submitting. Correct indices are
@@ -73,7 +66,7 @@ func (s *QuizService) getBook(ctx context.Context, gradeID, bookID string) (*mod
 // grade before returning questions.
 func (s *QuizService) GetQuestions(ctx context.Context, gradeID, bookID string) ([]*models.QuestionResponse, error) {
 	// Verify the book belongs to this grade.
-	book, err := s.getBook(ctx, bookID, gradeID)
+	book, err := s.bookRepo.GetByID(ctx, bookID, gradeID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, ErrNotFound
 	}
@@ -124,9 +117,9 @@ func (s *QuizService) GetQuestions(ctx context.Context, gradeID, bookID string) 
 // Answers are validated against the stored correct indices and a
 // score is calculated. The full result including correct answers
 // is returned so the teacher can review with the student.
-func (s *QuizService) SubmitAttempt(ctx context.Context, gradeID, bookID string, req *models.SubmitAttemptRequest, preview bool) (*models.AttemptResponse, error) {
+func (s *QuizService) SubmitAttempt(ctx context.Context, gradeID, bookID string, req *models.SubmitAttemptRequest) (*models.AttemptResponse, error) {
 	// Verify ownership.
-	_, err := s.getBook(ctx, bookID, gradeID)
+	_, err := s.bookRepo.GetByID(ctx, bookID, gradeID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, ErrNotFound
 	}
@@ -157,29 +150,29 @@ func (s *QuizService) SubmitAttempt(ctx context.Context, gradeID, bookID string,
 	}
 
 	// Persist the attempt.
-	if !preview {
-		_, err := s.attemptRepo.Create(ctx, &models.QuizAttempt{
-			BookID:  bookID,
-			GradeID: gradeID,
-			Score:   score,
-			Total:   len(questions),
-			Answers: req.Answers,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("save attempt: %w", err)
-		}
-
-		s.auditRepo.Log(ctx, &models.AuditEntry{
-			SchoolID: nil, // grade-level event, school_id not in context here
-			Action:   "quiz.completed",
-			Entity:   "book",
-			EntityID: &bookID,
-			Metadata: map[string]string{
-				"grade_id": gradeID,
-				"score":    fmt.Sprintf("%d/%d", score, len(questions)),
-			},
-		})
+	attempt, err := s.attemptRepo.Create(ctx, &models.QuizAttempt{
+		BookID:  bookID,
+		GradeID: gradeID,
+		Score:   score,
+		Total:   len(questions),
+		Answers: req.Answers,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("save attempt: %w", err)
 	}
+
+	s.auditRepo.Log(ctx, &models.AuditEntry{
+		SchoolID: nil, // grade-level event, school_id not in context here
+		Action:   "quiz.completed",
+		Entity:   "book",
+		EntityID: &bookID,
+		Metadata: map[string]string{
+			"grade_id": gradeID,
+			"score":    fmt.Sprintf("%d/%d", score, len(questions)),
+		},
+	})
+
+	_ = attempt // ID is saved, we return the response directly
 
 	return &models.AttemptResponse{
 		Score:   score,
@@ -225,7 +218,7 @@ func (s *QuizService) GetGradeProgress(ctx context.Context, schoolID, gradeID st
 			// Fetch book title on first encounter.
 			// This is intentionally lazy — only fetches books that have
 			// been attempted, not every book in the grade.
-			book, err := s.getBook(ctx, a.BookID, gradeID)
+			book, err := s.bookRepo.GetByID(ctx, a.BookID, gradeID)
 			if err != nil {
 				continue // book may have been deleted — skip gracefully
 			}
@@ -272,7 +265,7 @@ func (s *QuizService) GetGradeProgress(ctx context.Context, schoolID, gradeID st
 // GetDialogueURL returns a presigned URL for a book's teaching dialogue audio.
 // Returns ErrQuestionsNotReady if dialogue generation is not complete.
 func (s *QuizService) GetDialogueURL(ctx context.Context, gradeID, bookID string) (string, error) {
-	book, err := s.getBook(ctx, bookID, gradeID)
+	book, err := s.bookRepo.GetByID(ctx, bookID, gradeID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return "", ErrNotFound
 	}

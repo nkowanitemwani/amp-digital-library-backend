@@ -183,10 +183,6 @@ func main() {
 		admin.DELETE("/books/:id", bookHandler.Delete)
 		admin.GET("/categories/:id/books", bookHandler.GetByCategory)
 
-		admin.GET("/books/:id/dialogue",  quizHandler.GetDialogueURL)
-		admin.GET("/books/:id/questions", quizHandler.GetQuestions)
-		admin.POST("/books/:id/attempts", quizHandler.SubmitAttempt)
-
 		// Grade progress — teacher sees quiz scores per grade
 		admin.GET("/grades/:id/progress", quizHandler.GetGradeProgress)
 	}
