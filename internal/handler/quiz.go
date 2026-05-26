@@ -57,6 +57,9 @@ func (h *QuizHandler) GetQuestions(c *gin.Context) {
 // Records a completed quiz and returns the results including
 // correct answers so the teacher can review with the student.
 func (h *QuizHandler) SubmitAttempt(c *gin.Context) {
+	//Read preview flag admin previews are scored but not saved
+	preview := c.Query("preview") == "true"
+
 	gradeID := middleware.GradeIDFromContext(c)
 	bookID  := c.Param("id")
 
@@ -71,7 +74,7 @@ func (h *QuizHandler) SubmitAttempt(c *gin.Context) {
 		return
 	}
 
-	result, err := h.quizService.SubmitAttempt(c.Request.Context(), gradeID, bookID, &req)
+	result, err := h.quizService.SubmitAttempt(c.Request.Context(), gradeID, bookID, &req, preview)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrNotFound):
